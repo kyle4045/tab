@@ -291,10 +291,19 @@
       state.requestsOut = rows(snap);
       emit();
     }, noop));
-    stops.push(db.collectionGroup('invitations').where('to', '==', uid).onSnapshot(function (snap) {
-      state.invitations = rows(snap);
-      emit();
-    }, noop));
+    // Invitations to this account, from every group. This search needs the
+    // collection-group index in firestore.indexes.json; if it fails, it is
+    // tried again a few times.
+    function watchInvitations(n) {
+      stops.push(db.collectionGroup('invitations').where('to', '==', uid).onSnapshot(function (snap) {
+        state.invitations = rows(snap);
+        emit();
+      }, function (e) {
+        if (config.emulator) console.warn('invitations feed failed', e && e.code);
+        if (n < 5) setTimeout(function () { if (me() === uid) watchInvitations(n + 1); }, 3000 * (n + 1));
+      }));
+    }
+    watchInvitations(0);
     stops.push(db.doc('settings/' + uid).onSnapshot(function (snap) {
       state.settings = Object.assign(localSettings(), snap.exists ? snap.data() : {});
       arrived.settings = true;
