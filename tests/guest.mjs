@@ -48,6 +48,15 @@ try {
   await button(page, 'Continue as guest').click();
   check(await seen(page, 'Guest · saved on this phone only'), 'guest bar is shown');
   await shot(page, 'g02-guest-home');
+  check(!(await seen(page, 'A new version of Tab is ready', 1500)), 'no update banner while this is the newest version');
+  // The site publishes a newer version: when Tab comes back on screen it offers to update.
+  await page.route(/\/\?v=\d+$/, async (route) => {
+    const res = await route.fetch();
+    route.fulfill({ response: res, body: (await res.text()).replace(/(name="tab-version" content=")[^"]*/, '$1999999999999') });
+  });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  check(await seen(page, 'A new version of Tab is ready', 5000), 'a newer version on the site shows the update banner');
+  await page.unroute(/\/\?v=\d+$/);
 
   // 3. A group with typed names; the last name is typed but not added.
   await button(page, 'New group').click();

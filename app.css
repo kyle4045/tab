@@ -158,6 +158,9 @@ h1 { font-size: 30px; line-height: 1; text-wrap: balance; overflow-wrap: anywher
 .banner.warn { background: var(--warn-bg); color: var(--warn); }
 .banner.guest { padding-block: 0; padding-inline: 14px 8px; }
 .banner.guest .link { padding-inline: 8px; }
+/* A newer version of Tab is out: tap Update to reload. */
+.banner.update { padding-block: 0; padding-inline: 14px 8px; background: var(--ink); color: var(--on-ink); }
+.banner.update .link { padding-inline: 8px; color: var(--on-ink); }
 .link {
   border: 0; background: transparent; padding: 0; min-height: 44px; font-weight: 600; color: var(--fg);
   text-decoration: underline; text-underline-offset: 3px; white-space: nowrap;

@@ -2267,6 +2267,20 @@
 
   // ---------- app shell ----------
 
+  // A phone can keep Tab open for days (a home-screen app has no reload button),
+  // so when Tab comes back on screen it asks the site whether a newer version is
+  // out: index.html carries its version (dev/bump-version.mjs sets it).
+  var VERSION = (document.querySelector('meta[name="tab-version"]') || {}).content || '';
+  function newerVersion() {
+    if (!VERSION || !window.fetch) return Promise.resolve(false);
+    return fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (text) {
+        var m = /<meta name="tab-version" content="([^"]+)"/.exec(text);
+        return !!m && m[1] !== VERSION;
+      }, function () { return false; });
+  }
+
   var live = { route: null, draft: null, chat: [] };
 
   function App(props) {
@@ -2281,6 +2295,7 @@
     var cp = useState(''), copyText = cp[0], setCopyText = cp[1];
     var na = useState(false), needSignIn = na[0], setNeedSignIn = na[1]; // a guest tapped an AI button
     var tl = useState(false), toastLeaving = tl[0], setToastLeaving = tl[1];
+    var up = useState(false), updateReady = up[0], setUpdateReady = up[1];
     var screen = useRef({ key: null, route: null, anim: '' }); // the shown screen and how it came in
 
     useEffect(function () {
@@ -2289,6 +2304,16 @@
       return stop;
     }, []);
     useEffect(function () { window.scrollTo(0, 0); }, [route.name, route.id, route.gid]);
+    useEffect(function () {
+      function check() {
+        if (document.visibilityState !== 'visible') return;
+        newerVersion().then(function (yes) { if (yes) setUpdateReady(true); });
+      }
+      check();
+      document.addEventListener('visibilitychange', check);
+      var h = setInterval(check, 30 * 60 * 1000);
+      return function () { document.removeEventListener('visibilitychange', check); clearInterval(h); };
+    }, []);
     useEffect(function () {
       if (!toast) return undefined;
       setToastLeaving(false);
@@ -2485,6 +2510,10 @@
     var dmUnread = friends.reduce(function (n, p) { return n + p.dm.unread; }, 0);
 
     return html`<main class=${'app' + (tab ? ' with-tabs' : '')}>
+      ${updateReady && html`<div class="banner update" role="status">
+        <span>${t('update.ready')}</span>
+        <button class="link" onClick=${function () { location.reload(); }}>${t('update.now')}</button>
+      </div>`}
       ${!data.persistent && html`<p class="banner warn" role="status">${t('app.notSaved')}</p>`}
       ${data.canWrite === false && html`<p class="banner warn" role="status">${t('ro.banner')}</p>`}
       ${data.guest && tab && html`<div class="banner guest" role="status">
