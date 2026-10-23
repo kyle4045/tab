@@ -26,6 +26,20 @@ try {
   await page.reload({ waitUntil: 'networkidle' });
   check(await seen('Split bills with your friends'), 'a refresh keeps working (no 404)');
 
+  // Guest mode: a group kept on the phone, still there after a refresh.
+  await page.getByRole('button', { name: 'Continue as guest' }).click();
+  check(await seen('Guest · saved on this phone only'), 'Continue as guest opens the guest groups');
+  await page.getByRole('button', { name: 'New group', exact: true }).first().click();
+  await page.fill('#new-group-name', 'Live check');
+  await page.fill('#add-name', 'Dana');
+  await page.getByRole('button', { name: 'Create group' }).click();
+  check(await seen('2 members'), 'a guest can make a group');
+  await page.reload({ waitUntil: 'networkidle' });
+  check(await seen('Live check'), "the guest's group is still there after a refresh");
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'live-guest.png') });
+  await page.evaluate(() => window.Tab.store.clearGuest());
+  check(await seen('Continue as guest'), 'deleting guest data goes back to the welcome screen');
+
   await page.goto(URL_ + '?openExternalBrowser=1#join=0000000000000000000000000000000000ff', { waitUntil: 'networkidle' });
   check(await seen("You're invited"), 'an invite link shows "You\'re invited"');
   check(page.url() === URL_, 'the invite code is removed from the address bar');
