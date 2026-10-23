@@ -325,8 +325,28 @@
       ${inApp && html`<p class="banner warn" role="status">${t('signin.inApp')}</p>`}
       <div class="stack">
         <button class="btn" disabled=${busy} onClick=${signIn}>${t('signin.google')}</button>
+        ${!p.data.joining && html`<p class="muted small">${t('signin.googleHint')}</p>`}
         ${err && html`<p class="warn-text" role="alert">${err}</p>`}
-      </div>`;
+      </div>
+      ${!p.data.joining && html`<div class="stack">
+        <button class="btn ghost" onClick=${function () { store.startGuest(); }}>${t('signin.guest')}</button>
+        <p class="muted small">${p.data.hasGuestData ? t('signin.guestBack') : t('signin.guestHint')}</p>
+      </div>`}`;
+  }
+
+  // A guest's group is made of names typed in: no accounts, nothing to accept.
+  function AddByName(p) {
+    function add(ev) {
+      ev.preventDefault();
+      var name = p.value.trim().slice(0, 40);
+      if (!name) return;
+      p.onAdd(name);
+      p.onValue('');
+    }
+    return html`<form class="add-row" onSubmit=${add}>
+      <input id="add-name" class="field" aria-label=${t('newGroup.newFriend')} placeholder=${t('newGroup.newFriend')} value=${p.value} autocomplete="off" maxlength="40" onInput=${function (e) { p.onValue(e.target.value); }} />
+      <button class="btn small secondary" type="submit">${t('guest.add')}</button>
+    </form>`;
   }
 
   function joinErrorText(code) {
@@ -345,6 +365,7 @@
         <p class="muted small">${t('noinvite.signedAs', { email: p.data.user ? p.data.user.email : '' })}</p>
       </section>
       <div class="stack">
+        <button class="btn" onClick=${function () { store.signOut(true); }}>${t('signin.guest')}</button>
         <button class="btn secondary" onClick=${function () { store.signOut(); }}>${t('me.signOut')}</button>
       </div>`;
   }
@@ -459,7 +480,7 @@
         right=${html`<button class="icon-btn" aria-label=${t('members.title')} onClick=${function () { c.go('members'); }}><${Icon} name="users" /></button>`}
       />
 
-      <button class="chat-link" aria-label=${g.unread ? t('chat.openN', { n: g.unread }) : t('chat.open')} onClick=${function () { c.go('chat'); }}>
+      ${!c.data.guest && html`<button class="chat-link" aria-label=${g.unread ? t('chat.openN', { n: g.unread }) : t('chat.open')} onClick=${function () { c.go('chat'); }}>
         <span class="chat-link-icon"><${Icon} name="chat" /></span>
         <span class="row-main">
           <span class="row-title">${t('chat.title')}</span>
@@ -467,7 +488,7 @@
         </span>
         <${Badge} n=${g.unread} />
         <${Icon} name="arrow" size=${16} />
-      </button>
+      </button>`}
 
       <section class="card hero">
         <p class="muted">${mine > 0 ? t('group.owed') : mine < 0 ? t('group.owe') : t('home.square')}</p>
@@ -516,7 +537,7 @@
 
       <div class="cta-row cta">
         <button class="btn" onClick=${c.startNew}><${Icon} name="plus" weight=${2.5} />${t('home.addBill')}</button>
-        ${c.data.canAsk && html`<button class="btn secondary" onClick=${c.startAi}><${Icon} name="chat" />${t('ai.open')}</button>`}
+        ${(c.data.canAsk || c.data.guest) && html`<button class="btn secondary" onClick=${c.data.guest ? c.needSignIn : c.startAi}><${Icon} name="chat" />${t('ai.open')}</button>`}
       </div>`;
   }
 
@@ -646,7 +667,10 @@
         ${c.data.canScan && html`<${FilePick} class="btn dashed" accept=${c.data.scanTypes} onFile=${c.startScan}>
           <${Icon} name="camera" size=${18} />${t('edit.scan')}
         <//>`}
-        ${c.data.canAsk && html`<button class="btn dashed" onClick=${function () { c.go('ai'); }}>
+        ${c.data.guest && html`<button class="btn dashed" onClick=${c.needSignIn}>
+          <${Icon} name="camera" size=${18} />${t('edit.scan')}
+        </button>`}
+        ${(c.data.canAsk || c.data.guest) && html`<button class="btn dashed" onClick=${function () { if (c.data.guest) c.needSignIn(); else c.go('ai'); }}>
           <${Icon} name="chat" size=${18} />${t('ai.fromEditor')}
         </button>`}
       </section>
@@ -1312,14 +1336,32 @@
     var n = useState(''), name = n[0], setName = n[1];
     var p = useState([]), picked = p[0], setPicked = p[1];
     var e = useState(''), err = e[0], setErr = e[1];
+    // A guest types the names of the people in the group instead.
+    var ns = useState([]), names = ns[0], setNames = ns[1];
+    var ty = useState(''), typed = ty[0], setTyped = ty[1];
 
     function toggle(id) {
       setPicked(picked.indexOf(id) === -1 ? picked.concat(id) : picked.filter(function (x) { return x !== id; }));
+    }
+    function addName(n) { if (names.indexOf(n) === -1) setNames(names.concat(n)); }
+    function createAsGuest(clean, gid) {
+      // A name typed but not added yet counts too.
+      var all = names.concat(typed.trim() && names.indexOf(typed.trim()) === -1 ? [typed.trim().slice(0, 40)] : []);
+      var ids = all.map(function (n, i) {
+        var id = store.newId() + i;
+        store.put('people', id, newPerson(n, c.people.length + i));
+        return id;
+      });
+      store.put('groups', gid, {
+        name: clean, ownerId: c.me.id, memberIds: [c.me.id].concat(ids), preset: c.allGroups.length % COLORS.length, createdAt: Date.now()
+      });
+      c.go('group', null, gid);
     }
     function create() {
       var clean = name.trim();
       if (!clean) { setErr(t('newGroup.needName')); return; }
       var gid = store.newId();
+      if (c.data.guest) { createAsGuest(clean, gid); return; }
       store.put('groups', gid, {
         name: clean, ownerId: c.me.id, memberIds: [c.me.id], preset: c.allGroups.length % COLORS.length, createdAt: Date.now()
       }).then(function () {
@@ -1337,7 +1379,23 @@
         ${err && html`<p class="warn-text" role="alert">${err}</p>`}
       </section>
 
-      <section class="section">
+      ${c.data.guest && html`<section class="section">
+        <div class="eyebrow-row">
+          <h2 class="eyebrow">${t('guest.who')}</h2>
+          <span class="hint">${t('newGroup.picked', { n: names.length })}</span>
+        </div>
+        <div class="pills">
+          <span class="pill on">${t('people.you')}</span>
+          ${names.map(function (n) {
+            return html`<button key=${n} class="pill on" aria-label=${t('item.remove', { name: n })} onClick=${function () { setNames(names.filter(function (x) { return x !== n; })); }}>
+              ${n}<${Icon} name="close" size=${14} />
+            </button>`;
+          })}
+        </div>
+        <${AddByName} value=${typed} onValue=${setTyped} onAdd=${addName} />
+      </section>`}
+
+      ${!c.data.guest && html`<section class="section">
         <div class="eyebrow-row">
           <h2 class="eyebrow">${t('newGroup.who')}</h2>
           <span class="hint">${t('newGroup.picked', { n: picked.length })}</span>
@@ -1356,9 +1414,9 @@
           })}
         </div>
         <p class="muted small">${c.friends.length ? t('newGroup.inviteNote') : t('newGroup.noFriends')}</p>
-      </section>
+      </section>`}
 
-      <p class="muted small">${t('newGroup.adminNote')}</p>
+      ${!c.data.guest && html`<p class="muted small">${t('newGroup.adminNote')}</p>`}
       <div class="stack cta">
         <button class="btn" onClick=${create}>${t('newGroup.create')}</button>
       </div>`;
@@ -1371,6 +1429,7 @@
     var ms = useState(g.memberIds), ids = ms[0], setIds = ms[1];
     var nm = useState(g.name), name = nm[0], setName = nm[1];
     var ak = useState(null), asking = ak[0], setAsking = ak[1]; // {kind: 'remove', id} | {kind: 'leave'} | {kind: 'delete'}
+    var ty = useState(''), typed = ty[0], setTyped = ty[1]; // a guest adds people by name
 
     // Kept here as well as in the store so quick taps build on each other.
     var key = g.memberIds.join(',');
@@ -1387,6 +1446,11 @@
     function setMembers(next) {
       setIds(next);
       saveGroup(g, { memberIds: next }).catch(function () { c.say(t('app.saveFailed')); });
+    }
+    function addByName(n) {
+      var id = store.newId();
+      store.put('people', id, newPerson(n, c.people.length));
+      setMembers(ids.concat(id));
     }
     function invite(person) {
       store.inviteToGroup(g.id, person.id).then(function () {
@@ -1471,7 +1535,12 @@
         </div>
       </section>`}
 
-      ${admin && html`<section class="section">
+      ${c.data.guest && html`<section class="section">
+        <h2 class="eyebrow">${t('guest.addPeople')}</h2>
+        <${AddByName} value=${typed} onValue=${setTyped} onAdd=${addByName} />
+      </section>`}
+
+      ${admin && !c.data.guest && html`<section class="section">
         <h2 class="eyebrow">${t('members.invite')}</h2>
         ${others.length > 0 && html`<div class="pills">
           ${others.map(function (p) {
@@ -1511,6 +1580,16 @@
     function fail() { c.say(t('app.saveFailed')); }
     var incoming = c.data.requestsIn.map(function (r) { return person(r.from); });
     var outgoing = c.data.requestsOut.map(function (r) { return person(r.to); });
+
+    if (c.data.guest) {
+      return html`
+        <${Head} title=${t('people.title')} />
+        <section class="card">
+          <p class="row-title">${t('guest.friendsTitle')}</p>
+          <p class="muted">${t('guest.friendsLead')}</p>
+        </section>
+        <button class="btn" onClick=${function () { c.go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>`;
+    }
 
     return html`
       <${Head} title=${t('people.title')}
@@ -1673,6 +1752,7 @@
   }
 
   function Me(c) {
+    var k = useState(false), clearing = k[0], setClearing = k[1];
     return html`
       <${Head} title=${t('me.title')} />
       <section class="section center">
@@ -1689,11 +1769,20 @@
         </div>
       </section>
 
-      <div class="stack grow-top">
+      ${c.data.guest && html`<div class="stack grow-top">
+        <p class="muted small">${t('guest.meNote')}</p>
+        <button class="btn" onClick=${function () { c.go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
+        ${!clearing && html`<button class="btn ghost danger" onClick=${function () { setClearing(true); }}><${Icon} name="trash" size=${18} />${t('guest.clear')}</button>`}
+        ${clearing && html`<${Confirm} text=${t('guest.clearAsk')} label=${t('common.delete')}
+          onCancel=${function () { setClearing(false); }}
+          onConfirm=${function () { c.go('home', null, null); store.clearGuest(); }} />`}
+      </div>`}
+
+      ${!c.data.guest && html`<div class="stack grow-top">
         ${c.data.user && html`<p class="muted small">${t('me.signedInAs', { email: c.data.user.email })}</p>`}
         <button class="btn secondary" onClick=${function () { c.go('addFriend', null, undefined, 'me'); }}><${Icon} name="users" size=${18} />${t('friends.myLink')}</button>
         <button class="btn ghost" onClick=${function () { c.go('home', null, null); store.signOut(); }}>${t('me.signOut')}</button>
-      </div>`;
+      </div>`}`;
   }
 
   // Floating bar along the bottom of the four main screens. Groups carries the
@@ -1897,6 +1986,7 @@
     var ls = useState(null), lastSaved = ls[0], setLastSaved = ls[1];
     var ts = useState(''), toast = ts[0], setToast = ts[1];
     var cp = useState(''), copyText = cp[0], setCopyText = cp[1];
+    var na = useState(false), needSignIn = na[0], setNeedSignIn = na[1]; // a guest tapped an AI button
 
     useEffect(function () {
       var stop = store.subscribe(setData);
@@ -1936,7 +2026,7 @@
     }, [data.notice, data.inCircle, data.ready]);
 
     if (!data.ready) return html`<main class="app"><p class="boot">${t('app.loading')}</p></main>`;
-    if (data.auth === 'out') return html`<main class="app"><${SignIn} data=${data} lang=${lang} /></main>`;
+    if (data.auth === 'out' && !data.guest) return html`<main class="app"><${SignIn} data=${data} lang=${lang} /></main>`;
     if (data.auth === 'in' && data.inCircle === false) return html`<main class="app"><${NotInvited} data=${data} lang=${lang} /></main>`;
     if (data.platform && !data.persistent) return html`<main class="app"><${Disconnected} /></main>`;
 
@@ -2006,6 +2096,7 @@
 
     var c = {
       data: data, people: people, byId: byId, me: me, friends: friends, lang: lang, go: go, copy: copy, line: line, say: setToast,
+      needSignIn: function () { setNeedSignIn(true); },
       groups: groups, allGroups: allGroups, group: group, from: route.from || null,
       draft: draft, setDraft: setDraft, lastSaved: lastSaved, chat: chat, setChat: setChat,
       startNew: function () { resetChat(); setDraft(newDraft({ group: group, me: me })); go('edit'); },
@@ -2079,6 +2170,10 @@
     return html`<main class=${'app' + (tab ? ' with-tabs' : '')}>
       ${!data.persistent && html`<p class="banner warn" role="status">${t('app.notSaved')}</p>`}
       ${data.canWrite === false && html`<p class="banner warn" role="status">${t('ro.banner')}</p>`}
+      ${data.guest && tab && html`<div class="banner guest" role="status">
+        <span>${t('guest.bar')}</span>
+        <button class="link" onClick=${function () { go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
+      </div>`}
       ${view}
       ${tab && html`<${TabBar} current=${tab} unread=${unread} go=${go} />`}
       <div class="toast-wrap" aria-live="polite">${toast && html`<div class="toast">${toast}</div>`}</div>
@@ -2087,6 +2182,14 @@
           <h2 class="eyebrow">${t('copy.manual')}</h2>
           <textarea id="copy-text" class="field area" readonly rows="8" value=${copyText} onFocus=${function (e) { e.target.select(); }}></textarea>
           <button class="btn" onClick=${function () { setCopyText(''); }}>${t('common.close')}</button>
+        </div>
+      </div>`}
+      ${needSignIn && html`<div class="sheet" role="dialog" aria-label=${t('guest.aiTitle')}>
+        <div class="sheet-card">
+          <h2 class="row-title">${t('guest.aiTitle')}</h2>
+          <p class="muted">${t('guest.aiLead')}</p>
+          <button class="btn" onClick=${function () { setNeedSignIn(false); setDraft(null); go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
+          <button class="btn ghost" onClick=${function () { setNeedSignIn(false); }}>${t('guest.notNow')}</button>
         </div>
       </div>`}
     </main>`;

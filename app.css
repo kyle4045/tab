@@ -140,6 +140,8 @@ h1 { font-size: 24px; font-weight: 700; line-height: 1.1; text-wrap: balance; ov
   font-size: 14px;
 }
 .banner.warn { border-color: var(--owes); background: transparent; color: var(--owes); }
+.banner.guest { padding-block: 0; padding-inline: 14px 8px; }
+.banner.guest .link { padding-inline: 8px; }
 .link { border: 0; background: transparent; padding: 0; min-height: 44px; font-weight: 700; color: var(--owed); white-space: nowrap; }
 
 /* lists */

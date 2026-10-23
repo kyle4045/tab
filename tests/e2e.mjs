@@ -246,7 +246,10 @@ try {
 
   // 13. Signing out wipes this device's copy of the data.
   await tab(kyle, 'Me');
+  await kyle.evaluate(() => { window.beforeSignOut = true; });
   await button(kyle, 'Sign out').click();
+  // The copy is wiped after the sign-in screen shows, then the page reloads.
+  await kyle.waitForFunction(() => !window.beforeSignOut, null, { timeout: 15000 });
   check(await seen(kyle, 'Split bills with your friends', 15000), 'Sign out goes back to the sign-in screen');
   const leftover = await kyle.evaluate(() => new Promise((r) => { const q = indexedDB.databases ? indexedDB.databases() : Promise.resolve([]); q.then((d) => r(d.map((x) => x.name).filter((n) => /firestore/i.test(n) && /main/.test(n)))); }));
   check(leftover.length === 0, 'no copy of the data is left on the device after signing out' + (leftover.length ? ': ' + leftover.join(', ') : ''));

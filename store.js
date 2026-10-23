@@ -1,6 +1,7 @@
 // The only file that talks to the backend: Google sign-in and the database
 // (Firebase), photos (kept in the database) and receipt reading and the bill
 // assistant (the AI proxy in proxy/). Everything else works on plain objects.
+// A guest (no sign-in) keeps their groups and bills on this device only.
 // Where Firebase could not load at all, it runs from memory so the screens
 // still work.
 (function () {
@@ -64,6 +65,8 @@
     // off from their groups; only a page without Firebase may run from memory.
     platform: !!fb,
     auth: 'pending', // 'pending' | 'out' | 'in' | 'none' (no sign-in available)
+    guest: false, // using Tab without an account; the data stays on this device
+    hasGuestData: !!localGet('tab.guest'), // this device still holds a guest's groups
     user: null, // {uid, name, email} once signed in
     inCircle: null, // whether this account was ever let in through an invite or friend link
     joining: !!(localGet('tab.join') || localGet('tab.add')),
@@ -234,7 +237,7 @@
     retries = {};
     sample = null;
     Object.assign(state, {
-      ready: false, persistent: false, user: null, inCircle: null, meId: null, friendCode: null,
+      ready: false, persistent: false, guest: false, user: null, inCircle: null, meId: null, friendCode: null,
       chats: {}, photos: {}, people: [], bills: [], payments: [], groups: [],
       friends: [], requestsIn: [], requestsOut: [], invitations: [], groupInvites: {},
       canUpload: false, canAsk: false, canScan: false, settings: localSettings()
@@ -406,6 +409,51 @@
     });
   }
 
+  // ---------- guest ----------
+
+  // A guest's people, groups, bills and payments live in this device's storage.
+  var GUEST_ID = 'me';
+  function readGuest() {
+    try {
+      var saved = JSON.parse(localGet('tab.guest'));
+      return saved && typeof saved === 'object' ? saved : {};
+    } catch (e) { return {}; }
+  }
+  function saveGuest() {
+    localSet('tab.guest', JSON.stringify({ people: state.people, groups: state.groups, bills: state.bills, payments: state.payments }));
+    state.hasGuestData = true;
+  }
+
+  // Opens Tab without an account. The first time, the guest is one person, "Me".
+  function startGuest() {
+    var saved = readGuest();
+    localSet('tab.mode', 'guest');
+    Object.assign(state, {
+      guest: true, ready: true, persistent: true, meId: GUEST_ID,
+      people: saved.people || [], groups: saved.groups || [], bills: saved.bills || [], payments: saved.payments || []
+    });
+    if (!state.people.some(function (p) { return p.id === GUEST_ID; })) {
+      state.people = state.people.concat({
+        id: GUEST_ID, name: Tab.i18n.t('guest.meName'), isMe: false, archived: false, avatar: { kind: 'preset', preset: 0 }
+      });
+      saveGuest();
+    }
+    emit();
+  }
+
+  // Back to the welcome screen. The guest's data stays on this device for next time.
+  function leaveGuest() {
+    localSet('tab.mode', null);
+    Object.assign(state, { guest: false, meId: null, people: [], groups: [], bills: [], payments: [] });
+    emit();
+  }
+
+  function clearGuest() {
+    localSet('tab.guest', null);
+    state.hasGuestData = false;
+    leaveGuest();
+  }
+
   function start() {
     // LINE's own browser can't sign in with Google and doesn't keep the login:
     // this asks LINE to open the page in the phone's browser instead.
@@ -428,9 +476,11 @@
     takeInvite();
     auth.onAuthStateChanged(function (user) {
       stopAll();
-      if (user) { signedIn(user); return; }
+      if (user) { localSet('tab.mode', null); signedIn(user); return; }
       state.auth = 'out';
       state.ready = true;
+      // A guest comes back to their groups, unless they opened an invite link.
+      if (localGet('tab.mode') === 'guest' && !state.joining) { startGuest(); return; }
       emit();
     });
   }
@@ -450,8 +500,9 @@
   }
 
   // Signing out also wipes the copy of the data kept on this device, then
-  // starts the page afresh.
-  function signOut() {
+  // starts the page afresh, as a guest if `toGuest`.
+  function signOut(toGuest) {
+    if (toGuest === true) localSet('tab.mode', 'guest');
     if (!auth) return Promise.resolve();
     return auth.signOut().then(function () {
       return db.terminate().then(function () { return db.clearPersistence(); }).catch(noop);
@@ -635,7 +686,7 @@
 
   function put(collection, id, data) {
     var doc = body(data);
-    if (db) {
+    if (db && !state.guest) {
       if (collection === 'groups') withAccess(id, doc);
       return guard(db.collection(pathOf(collection, id, doc)).doc(id).set(doc));
     }
@@ -647,12 +698,14 @@
       return row;
     });
     setMemoryRows(collection, found ? rows : rows.concat(row));
+    if (state.guest) saveGuest();
     return Promise.resolve();
   }
 
   function remove(collection, id) {
-    if (db) return guard(db.collection(pathOf(collection, id)).doc(id).delete());
+    if (db && !state.guest) return guard(db.collection(pathOf(collection, id)).doc(id).delete());
     setMemoryRows(collection, memoryRows(collection).filter(function (r) { return r.id !== id; }));
+    if (state.guest) saveGuest();
     return Promise.resolve();
   }
 
@@ -897,6 +950,9 @@
     scanReceipt: scanReceipt,
     signIn: signIn,
     signOut: signOut,
+    startGuest: startGuest,
+    leaveGuest: leaveGuest,
+    clearGuest: clearGuest,
     inviteFor: inviteFor,
     clearJoinError: function () { state.joinError = null; emit(); },
     clearNotice: function () { state.notice = null; emit(); },
