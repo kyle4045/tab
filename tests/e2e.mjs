@@ -1,4 +1,6 @@
-// End-to-end check of Tab against the Firebase emulators, on a phone-sized screen.
+// End-to-end check of Tab against the Firebase emulators, on a phone-sized screen,
+// with four accounts: Kyle (let in by hand), Dana (his friend, joins by invitation),
+// Sean (joins with a group invite link) and Eve (a stranger).
 // Start the emulators (dev/emulators.ps1) and the page server (dev/serve.ps1), then:
 //   node tests/e2e.mjs [screenshot folder]
 import { chromium } from 'playwright';
@@ -25,6 +27,19 @@ async function signIn(page, email) {
   await page.waitForFunction(() => window.Tab && window.Tab.store && window.firebase);
   await page.evaluate((e) => window.Tab.store.testSignIn(e), email);
 }
+const button = (page, name) => page.getByRole('button', { name, exact: true }).first();
+// Taps a bottom tab, going Back first from screens that have no tab bar.
+async function tab(page, name) {
+  // A tab's name can carry an unread count after it ("Groups 1 new message").
+  const it = page.locator('nav.tabbar').getByRole('button', { name: new RegExp('^' + name) });
+  for (let i = 0; i < 4 && !(await it.isVisible()); i++) await button(page, 'Back').click().catch(() => {});
+  await it.click();
+}
+// Opens a group from the Groups tab, without reloading.
+async function openGroup(page, name) {
+  await tab(page, 'Groups');
+  await page.getByRole('button', { name: new RegExp(name) }).first().click();
+}
 // Writes a document as an administrator (the emulator skips the rules for "Bearer owner").
 async function adminSet(path, fields) {
   const [col, id] = path.split('/');
@@ -33,12 +48,6 @@ async function adminSet(path, fields) {
   });
   if (!res.ok) throw new Error('adminSet ' + res.status + ' ' + await res.text());
 }
-// Reloads the page and opens the first group in the list.
-async function openGroup(page) {
-  await page.reload();
-  await page.getByText('Your groups').first().waitFor({ timeout: 15000 });
-  await page.locator('main .row.tap').first().click();
-}
 async function clearEmulators() {
   await fetch('http://127.0.0.1:8080/emulator/v1/projects/demo-tab/databases/(default)/documents', { method: 'DELETE' });
   await fetch('http://127.0.0.1:9099/emulator/v1/projects/demo-tab/accounts', { method: 'DELETE' });
@@ -46,146 +55,194 @@ async function clearEmulators() {
 
 const browser = await chromium.launch();
 const pages = [];
+const errors = [];
+async function phonePage(who) {
+  const ctx = await browser.newContext(phone);
+  const shared = [];
+  // LINE's share page is caught here instead of being opened.
+  await ctx.route('https://line.me/**', (route) => { shared.push(new URL(route.request().url()).searchParams.get('text') || ''); route.fulfill({ body: 'LINE' }); });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push(who + ': ' + e.message));
+  if (process.env.DEBUG) page.on('console', (m) => console.log('  [' + who + ' ' + m.type() + '] ' + m.text().slice(0, 300)));
+  pages.push(page);
+  return { page, shared };
+}
+
 try {
   await clearEmulators();
-  const errors = [];
-  const ownerCtx = await browser.newContext(phone);
-  // LINE's share page is caught here instead of being opened.
-  const shared = [];
-  await ownerCtx.route('https://line.me/**', (route) => { shared.push(new URL(route.request().url()).searchParams.get('text') || ''); route.fulfill({ body: 'LINE' }); });
-  const owner = await ownerCtx.newPage();
-  pages.push(owner);
-  owner.on('pageerror', (e) => errors.push('owner: ' + e.message));
 
-  // 1. Signed out, then signed in without an invite.
-  await owner.goto(BASE);
-  check(await seen(owner, 'Split bills with your friends'), 'signed-out visitor sees the sign-in screen');
-  await shot(owner, '01-sign-in');
-  await signIn(owner, 'kyle@example.com');
-  check(await seen(owner, 'You need an invite'), 'a new account without an invite is told it needs one');
+  // 1. Kyle: signed out, then signed in without an invite, then let in by hand.
+  const { page: kyle, shared: kyleShared } = await phonePage('kyle');
+  await kyle.goto(BASE);
+  check(await seen(kyle, 'Split bills with your friends'), 'signed-out visitor sees the sign-in screen');
+  await shot(kyle, '01-sign-in');
+  await signIn(kyle, 'kyle@example.com');
+  check(await seen(kyle, 'You need an invite'), 'a new account without an invite is told it needs one');
+  const kyleUid = await kyle.evaluate(() => window.firebase.auth().currentUser.uid);
+  await adminSet('members/' + kyleUid, { invite: { stringValue: 'bootstrap' }, joinedAt: { integerValue: '1' } });
+  check(await seen(kyle, 'Your groups'), 'once let in, Kyle lands on his (empty) groups');
+  check(await seen(kyle, 'No groups yet'), 'there is no setup screen and no example data');
+  await tab(kyle, 'Me');
+  check(await seen(kyle, 'kyle'), "Kyle's profile was made from his Google name");
 
-  // 2. Kyle is let in by hand (as he will be on the real site) and sets up.
-  const kyleUid = await owner.evaluate(() => window.firebase.auth().currentUser.uid);
-  await adminSet('members/' + kyleUid, { invite: { stringValue: 'bootstrap' }, personId: { nullValue: null }, joinedAt: { integerValue: '1' } });
-  check(await seen(owner, 'Split the bill before anyone forgets'), 'once in the circle, the owner sees first-run setup');
-  await owner.fill('#setup-name', 'Kyle');
-  await owner.getByText('Load an example outing instead').click();
-  check(await seen(owner, 'This is example data.'), 'example outing loads into a new group');
-  // Without a reload: the bills of a group made a moment ago must show.
-  check(await seen(owner, 'Hotpot night'), 'bills in a brand-new group show without a reload');
-  await owner.getByRole('button', { name: /Open group chat/ }).click();
-  await owner.getByPlaceholder('Message the group').fill('First message');
-  await owner.keyboard.press('Enter');
-  check(await seen(owner, 'First message'), 'chat in a brand-new group works without a reload');
-  await owner.waitForTimeout(1500);
+  // 2. Kyle's friend link, with a QR code and a LINE button.
+  await tab(kyle, 'Friends');
+  check(await seen(kyle, 'No friends yet'), 'Friends starts empty');
+  await button(kyle, 'Add friend').click();
+  await kyle.waitForFunction(() => /#add=/.test((document.getElementById('friend-link') || {}).value || ''), null, { timeout: 10000 });
+  const friendLink = await kyle.inputValue('#friend-link');
+  check(/^http:\/\/localhost:8765\/\?openExternalBrowser=1#add=[0-9a-f]{36}$/.test(friendLink), 'a personal friend link is made');
+  check(await kyle.locator('svg.qr').count() === 1, 'the friend link has a QR code');
+  await button(kyle, 'Send in LINE').click();
+  await kyle.waitForTimeout(1200);
+  check(kyleShared.some((s) => s.includes(friendLink)), 'the friend link can be sent in LINE');
+  await shot(kyle, '02-add-friend');
 
-  // 3. The money maths from HANDOFF.md, read back from the database.
-  await owner.reload();
-  check(await seen(owner, 'Your groups'), 'after a reload the owner is still signed in and sees their groups');
-  await owner.getByRole('button', { name: 'Settle', exact: true }).click();
-  await owner.waitForTimeout(800);
-  const settleText = await owner.locator('main').innerText();
-  check(['476', '152'].every((n) => settleText.includes(n)), "the owner's Settle tab shows Dana 476 and Arjun 152");
-  await shot(owner, '02-settle');
-  await owner.locator('main .row.tap').first().click();
-  await owner.waitForTimeout(800);
-  const groupSettle = await owner.locator('main').innerText();
-  check(['964', '476', '152'].every((n) => groupSettle.includes(n)), "the group's Settle up shows 964 / 476 / 152");
-  await owner.getByRole('button', { name: 'Send the plan in LINE' }).click();
-  await owner.waitForTimeout(1500);
-  check(shared.length === 1 && ['964', '476', '152'].every((n) => shared[0].includes(n)), 'Send the plan in LINE opens LINE with the plan written');
-  await openGroup(owner);
-  await owner.getByText('Hotpot night').first().click();
-  await owner.waitForTimeout(500);
-  const billText = await owner.locator('main').innerText();
-  check(['572', '792', '660', '2,596'].every((n) => billText.includes(n)), 'Hotpot night shares 572 / 792 / 572 / 660, total 2,596');
-  await shot(owner, '03-bill');
+  // 3. Dana opens Kyle's friend link: she gets in and sends a request.
+  const { page: dana } = await phonePage('dana');
+  await dana.goto(friendLink.replace('/?', '/?emu&'));
+  check(await seen(dana, 'Add a friend on Tab'), 'a friend link explains itself before sign-in');
+  await signIn(dana, 'dana@example.com');
+  check(await seen(dana, 'Friend request sent to kyle'), 'after sign-in Dana is told her friend request was sent');
+  check(await seen(dana, 'Your groups'), 'the friend link let Dana into Tab');
+  await tab(dana, 'Friends');
+  check(await seen(dana, 'Sent requests'), "Dana sees her request waiting for Kyle's answer");
+  await dana.waitForTimeout(4000);
+  check(await dana.locator('.toast').count() === 0, 'the friend-request message goes away by itself');
 
-  // 4. Chat and an invite link.
-  await openGroup(owner);
-  await owner.getByRole('button', { name: /Open group chat/ }).click();
-  await owner.getByPlaceholder('Message the group').fill('Hello from Kyle');
-  await owner.keyboard.press('Enter');
-  check(await seen(owner, 'Hello from Kyle'), 'owner can post in the group chat');
-  await owner.waitForTimeout(1500); // let the message reach the database before the page reloads
-  await openGroup(owner);
-  await owner.getByRole('button', { name: 'Members', exact: true }).click();
-  await owner.getByText('Invite a friend').click();
-  await owner.waitForFunction(() => /#join=/.test((document.getElementById('invite-link') || {}).value || ''), null, { timeout: 10000 });
-  const link = await owner.inputValue('#invite-link');
-  check(/^http:\/\/localhost:8765\/\?openExternalBrowser=1#join=[0-9a-f]{36}$/.test(link), 'invite link is made: ' + link.replace(/join=.*/, 'join=…'));
-  await shot(owner, '04-invite');
-  await owner.getByRole('button', { name: 'Send the invite in LINE' }).click();
-  await owner.waitForTimeout(1500);
-  check(shared.length === 2 && shared[1].includes(link), 'Send the invite in LINE opens LINE with the invite link in the message');
+  // 4. Kyle accepts.
+  await tab(kyle, 'Friends');
+  check(await seen(kyle, 'Friend requests', 15000), 'Kyle sees the request without reloading');
+  await shot(kyle, '03-friend-request');
+  await button(kyle, 'Accept').click();
+  check(await seen(kyle, 'You and dana are now friends'), 'Kyle accepts and they are friends');
+  check(await dana.getByRole('button', { name: /kyle/ }).first().waitFor({ timeout: 10000 }).then(() => true, () => false), "Dana's Friends list shows Kyle");
 
-  // 5. A friend opens the link, signs in, picks her name and chats.
-  const friendCtx = await browser.newContext(phone);
-  const friend = await friendCtx.newPage();
-  pages.push(friend);
-  friend.on('pageerror', (e) => errors.push('friend: ' + e.message));
-  if (process.env.DEBUG) friend.on('console', (m) => console.log('  [friend ' + m.type() + '] ' + m.text().slice(0, 300)));
-  await friend.goto(link.replace('/?', '/?emu&'));
-  check(await seen(friend, "You're invited"), 'the invite link shows "You\'re invited"');
-  check(!(await friend.evaluate(() => location.hash)).includes('join'), 'the invite code is taken out of the address bar');
-  await signIn(friend, 'dana@example.com');
-  check(await seen(friend, 'Who are you?'), 'after sign-in the friend is asked who she is');
-  await friend.getByRole('button', { name: 'Dana', exact: true }).click();
-  check(await seen(friend, 'Your groups'), 'the friend now sees her groups');
-  await friend.locator('main .row.tap').first().click();
-  await friend.getByRole('button', { name: /Open group chat/ }).click();
-  check(await seen(friend, 'Hello from Kyle'), "the friend sees the owner's chat message");
-  await friend.getByPlaceholder('Message the group').fill('Hi from Dana');
-  await friend.keyboard.press('Enter');
-  check(await seen(owner, 'Hi from Dana', 15000) || (await owner.reload(), await seen(owner, 'Hi from Dana')), "the owner gets the friend's reply");
-  await shot(friend, '05-friend-chat');
+  // 5. Kyle makes a group and invites Dana; she accepts.
+  await tab(kyle, 'Groups');
+  await button(kyle, 'New group').click();
+  await kyle.fill('#new-group-name', 'Hotpot');
+  await button(kyle, 'dana').click();
+  await button(kyle, 'Create group').click();
+  check(await seen(kyle, 'No bills yet'), 'the new group opens straight away');
+  await kyle.getByRole('button', { name: 'Members', exact: true }).click();
+  check(await seen(kyle, 'Waiting for an answer'), 'Dana shows as invited in Members');
+  await shot(kyle, '04-members-invited');
+  await tab(dana, 'Groups');
+  check(await seen(dana, 'kyle invited you', 15000), 'Dana sees the invitation without reloading');
+  await shot(dana, '05-invitation');
+  check(await dana.getByText('Friend request sent').count() === 0, 'the friend-request message does not come back later');
+  await button(dana, 'Join').click();
+  check(await seen(dana, 'You joined Hotpot'), 'Dana accepts the invitation');
+  await kyle.waitForTimeout(1500);
+  check(!(await kyle.locator('main').innerText()).includes('Waiting for an answer'), "Kyle's Members list no longer shows Dana as waiting");
 
-  // 6. The friend marks a payment; the owner sees it.
-  await friend.reload();
-  await friend.getByRole('button', { name: 'Settle', exact: true }).click();
-  await friend.locator('main .row.tap').first().click();
-  await friend.getByRole('button', { name: 'Mark as paid' }).first().click();
-  check(await seen(friend, 'Marked as paid.'), 'the friend can mark a payment as paid');
-  await owner.reload();
-  await owner.getByRole('button', { name: 'Settle', exact: true }).click();
-  await owner.waitForTimeout(800);
-  const after = await owner.locator('main').innerText();
-  check(!after.includes('964'), "the owner's Settle screen reflects the friend's payment");
+  // 6. Kyle adds a bill through the editor; both see it at once.
+  await openGroup(kyle, 'Hotpot');
+  await button(kyle, 'Add a bill').click();
+  await kyle.fill('#bill-title', 'Dinner');
+  for (const [name, price] of [['Fried rice', '300'], ['Beer', '200']]) {
+    await kyle.fill('#new-item-name', name);
+    await kyle.fill('#new-item-price', price);
+    await button(kyle, 'Add').click();
+  }
+  await button(kyle, 'Save bill').click();
+  check(await seen(kyle, '250'), 'the saved bill splits NT$500 into 250 each');
+  await openGroup(kyle, 'Hotpot');
+  check(await seen(kyle, 'Dinner'), 'the bill shows in the group without a reload');
+  await openGroup(dana, 'Hotpot');
+  check(await seen(dana, 'Dinner', 15000), 'Dana sees the new bill without a reload');
+  await tab(dana, 'Settle');
+  check(await seen(dana, '250'), 'Dana owes Kyle 250 in Settle');
 
-  // 7. A stranger who signs in without an invite sees nothing.
-  const strangerCtx = await browser.newContext(phone);
-  const stranger = await strangerCtx.newPage();
-  await stranger.goto(BASE);
-  await signIn(stranger, 'eve@example.com');
-  check(await seen(stranger, 'You need an invite'), 'a stranger is told they need an invite');
-  const peek = await stranger.evaluate(() => Promise.all([
+  // 7. Chat both ways, no reloads.
+  await openGroup(kyle, 'Hotpot');
+  await kyle.getByRole('button', { name: /Open group chat/ }).click();
+  await kyle.getByPlaceholder('Message the group').fill('Hello from Kyle');
+  await kyle.keyboard.press('Enter');
+  await openGroup(dana, 'Hotpot');
+  await dana.getByRole('button', { name: /Open group chat/ }).click();
+  check(await seen(dana, 'Hello from Kyle', 15000), "Dana gets Kyle's message");
+  await dana.getByPlaceholder('Message the group').fill('Hi from Dana');
+  await dana.keyboard.press('Enter');
+  check(await seen(kyle, 'Hi from Dana', 15000), "Kyle gets Dana's reply");
+  await shot(dana, '06-chat');
+
+  // 8. Dana pays; Kyle's Settle shows it.
+  await tab(dana, 'Settle');
+  await dana.locator('main .row.tap').first().click();
+  await button(dana, 'Mark as paid').click();
+  check(await seen(dana, 'Marked as paid.'), 'Dana marks her payment as paid');
+  await tab(kyle, 'Settle');
+  await kyle.waitForTimeout(1500);
+  check(!(await kyle.locator('main').innerText()).includes('250'), "Kyle's Settle shows the debt cleared");
+
+  // 9. Sean, not a friend, joins with the group invite link.
+  await openGroup(kyle, 'Hotpot');
+  await kyle.getByRole('button', { name: 'Members', exact: true }).click();
+  await kyle.getByText('Invite a friend').first().click();
+  await kyle.waitForFunction(() => /#join=/.test((document.getElementById('invite-link') || {}).value || ''), null, { timeout: 10000 });
+  const groupLink = await kyle.inputValue('#invite-link');
+  const { page: sean } = await phonePage('sean');
+  await sean.goto(groupLink.replace('/?', '/?emu&'));
+  check(await seen(sean, "You're invited"), 'the group link shows "You\'re invited"');
+  await signIn(sean, 'sean@example.com');
+  check(await seen(sean, 'Hotpot', 15000), 'Sean is in the group after signing in');
+  await openGroup(sean, 'Hotpot');
+  check(await seen(sean, 'Dinner'), "Sean sees the group's bills");
+  check(await seen(sean, '3 members'), 'the group now has 3 members');
+
+  // 10. A stranger sees nothing.
+  const { page: eve } = await phonePage('eve');
+  await eve.goto(BASE);
+  await signIn(eve, 'eve@example.com');
+  check(await seen(eve, 'You need an invite'), 'a stranger is told they need an invite');
+  const peek = await eve.evaluate(() => Promise.all([
     window.firebase.firestore().collection('people').get().then(() => 'read', (e) => e.code),
     window.firebase.firestore().collection('groups').where('memberUids', 'array-contains', 'x').get().then(() => 'read', (e) => e.code)
   ]));
   check(peek.every((r) => r === 'permission-denied'), 'the database refuses the stranger: ' + peek.join(', '));
 
-  // 8. Language, photo and leaving the group.
-  await owner.getByRole('button', { name: 'Me', exact: true }).click();
-  await owner.getByRole('button', { name: '繁體中文', exact: true }).click();
-  check(await seen(owner, '登出'), 'switching to Chinese works');
-  await owner.getByRole('button', { name: 'English', exact: true }).click();
-  await owner.getByText('Edit profile').click();
-  await owner.locator('input[type=file]').first().setInputFiles(PHOTO);
-  await owner.waitForFunction(() => /^data:image/.test((document.querySelector('img.avatar') || {}).src || ''), null, { timeout: 10000 });
-  await owner.getByRole('button', { name: 'Save', exact: true }).click();
-  await owner.reload();
-  await owner.getByRole('button', { name: 'Me', exact: true }).click();
-  check(await owner.waitForFunction(() => /^data:image/.test((document.querySelector('img.avatar') || {}).src || ''), null, { timeout: 10000 }).then(() => true, () => false),
-    'a profile photo is saved and shown after a reload');
-  await shot(owner, '06-me');
+  // 11. Kyle removes Sean; Dana leaves. Both lose access.
+  await openGroup(kyle, 'Hotpot');
+  await kyle.getByRole('button', { name: 'Members', exact: true }).click();
+  await kyle.getByRole('button', { name: 'Remove sean from the group' }).click();
+  await button(kyle, 'Remove').click();
+  await kyle.waitForTimeout(1500);
+  const seanLeft = await sean.evaluate(() => window.firebase.firestore().collection('groups').where('memberUids', 'array-contains', window.firebase.auth().currentUser.uid).get().then((s) => s.size));
+  check(seanLeft === 0, 'after Kyle removes Sean, Sean no longer has access');
+  await openGroup(dana, 'Hotpot');
+  await dana.getByRole('button', { name: 'Members', exact: true }).click();
+  await button(dana, 'Leave group').click();
+  await dana.getByRole('button', { name: 'Leave group' }).last().click();
+  await dana.waitForTimeout(1500);
+  const danaLeft = await dana.evaluate(() => window.firebase.firestore().collection('groups').where('memberUids', 'array-contains', window.firebase.auth().currentUser.uid).get().then((s) => s.size));
+  check(danaLeft === 0, 'after leaving, Dana no longer has access');
 
-  await openGroup(friend);
-  await friend.getByRole('button', { name: 'Members', exact: true }).click();
-  await friend.getByRole('button', { name: 'Leave group' }).click();
-  await friend.getByRole('button', { name: 'Leave group' }).last().click();
-  await friend.waitForTimeout(1500);
-  const leftRead = await friend.evaluate(() => window.firebase.firestore().collection('groups').where('memberUids', 'array-contains', window.firebase.auth().currentUser.uid).get().then((s) => s.size));
-  check(leftRead === 0, 'after leaving, the friend no longer has access to the group');
+  // 12. Language, photo, and the money maths from HANDOFF.md.
+  await tab(kyle, 'Me');
+  await button(kyle, '繁體中文').click();
+  check(await seen(kyle, '登出'), 'switching to Chinese works');
+  await button(kyle, 'English').click();
+  await kyle.getByText('Edit profile').click();
+  await kyle.locator('input[type=file]').first().setInputFiles(PHOTO);
+  await kyle.waitForFunction(() => /^data:image/.test((document.querySelector('img.avatar') || {}).src || ''), null, { timeout: 10000 });
+  await button(kyle, 'Save').click();
+  await kyle.waitForTimeout(1500);
+  await kyle.reload();
+  await tab(kyle, 'Me');
+  check(await kyle.waitForFunction(() => /^data:image/.test((document.querySelector('img.avatar') || {}).src || ''), null, { timeout: 10000 }).then(() => true, () => false),
+    'a profile photo is saved and shown after a reload');
+  const shares = await kyle.evaluate(() => {
+    const all = ['me', 'mei', 'arjun', 'dana'];
+    const it = (price, ids) => ({ id: String(price), price, sharerIds: ids });
+    return window.Tab.calc.billShares({
+      payerId: 'mei', presentIds: all, servicePct: 10,
+      items: [it(400, all), it(720, ['me', 'mei', 'arjun']), it(640, ['mei', 'dana']), it(240, all), it(360, ['me', 'arjun', 'dana'])]
+    });
+  });
+  check(shares.total === 2596 && shares.shares.me === 572 && shares.shares.mei === 792 && shares.shares.arjun === 572 && shares.shares.dana === 660,
+    'money maths: Hotpot night shares 572 / 792 / 572 / 660, total 2,596');
 
   check(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
 } catch (e) {

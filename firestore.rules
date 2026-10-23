@@ -1,10 +1,19 @@
 rules_version = '2';
 
 // Who may see and change what in Tab's database.
-// - The "circle" is everyone who has joined through an invite link (members/{uid}).
-//   Circle members share the list of people (names and avatars).
-// - A group, its bills, payments and chat are visible only to the accounts in
-//   that group's memberUids.
+// - Tab is invite-only. The "circle" is everyone let in through someone's
+//   friend link (friendCodes/{code}) or a group invite link (invites/{code}),
+//   each with a members/{uid} record. Circle members can read each other's
+//   profiles (people/{uid}: name and avatar).
+// - Every person is an account: a profile's id is its owner's uid, and only
+//   the owner can change it.
+// - Friends: a request (friendRequests/{from}_{to}) that the other person
+//   accepts by creating friends/{a}_{b} (the two uids sorted).
+// - A group, and its bills, payments and messages, is visible only to the
+//   accounts in its memberUids. memberIds always lists the same accounts.
+//   Nobody is put in a group by someone else: they join themselves, through
+//   an invitation (groups/{gid}/invitations/{uid}) sent by a member who is
+//   their friend, or through a group invite link.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -18,31 +27,42 @@ service cloud.firestore {
       return code is string && code.size() >= 20 && exists(/databases/$(database)/documents/invites/$(code))
         && get(/databases/$(database)/documents/invites/$(code)).data.expiresAt > request.time;
     }
+    function friendCode(code) {
+      return code is string && code.size() >= 20 && exists(/databases/$(database)/documents/friendCodes/$(code));
+    }
+    function pairId(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+    function friendsWith(uid) { return exists(/databases/$(database)/documents/friends/$(pairId(me(), uid))); }
 
     match /groups/{gid} {
       function before() { return resource.data; }
       function after() { return request.resource.data; }
       function isMember() { return me() in before().memberUids; }
-      // Anything a member edits, as long as who has access stays the same.
+      function sameLists() { return after().memberIds == after().memberUids; }
+      // Anything a member edits, as long as who is in it stays the same.
       function memberEdit() { return isMember() && after().memberUids == before().memberUids; }
-      // The owner may let people in or out, but can't lock themselves out.
-      function ownerEdit() { return before().ownerUid == me() && after().memberUids is list && me() in after().memberUids; }
+      // The owner may take people out, but not put anyone in or lock themself out.
+      function ownerEdit() {
+        return before().ownerUid == me() && me() in after().memberUids
+          && after().memberUids.toSet().difference(before().memberUids.toSet()).size() == 0;
+      }
       function leaving() { return isMember() && after().memberUids == before().memberUids.removeAll([me()]); }
-      // Someone with this group's invite link adds themself, and nothing else.
+      // Someone with an invitation or this group's invite link adds themself, and nothing else.
       function joining() {
         return !isMember()
-          && after().diff(before()).affectedKeys().hasOnly(['memberUids', 'joinCode'])
+          && after().diff(before()).affectedKeys().hasOnly(['memberUids', 'memberIds', 'joinCode'])
           && after().memberUids == before().memberUids.concat([me()])
-          && liveInvite(after().joinCode)
-          && get(/databases/$(database)/documents/invites/$(after().joinCode)).data.groupId == gid;
+          && (exists(/databases/$(database)/documents/groups/$(gid)/invitations/$(me()))
+            || (liveInvite(after().joinCode) && get(/databases/$(database)/documents/invites/$(after().joinCode)).data.groupId == gid));
       }
 
       allow read: if signedIn() && me() in resource.data.memberUids;
       allow create: if inCircle()
         && request.resource.data.ownerUid == me()
-        && request.resource.data.memberUids == [me()];
+        && request.resource.data.memberUids == [me()]
+        && sameLists();
       allow update: if signedIn()
         && after().ownerUid == before().ownerUid
+        && sameLists()
         && (memberEdit() || ownerEdit() || leaving() || joining());
       allow delete: if signedIn() && resource.data.ownerUid == me();
 
@@ -59,25 +79,72 @@ service cloud.firestore {
         allow create, update: if inGroup(gid)
           && request.resource.data.text is string && request.resource.data.text.size() <= 1000;
       }
+      // An invitation to this group for one account, from a member who is their friend.
+      match /invitations/{uid} {
+        allow read: if inGroup(gid) || (signedIn() && me() == uid);
+        allow create: if inGroup(gid)
+          && friendsWith(uid)
+          && !(uid in get(/databases/$(database)/documents/groups/$(gid)).data.memberUids)
+          && request.resource.data.from == me()
+          && request.resource.data.to == uid
+          && request.resource.data.groupId == gid
+          && request.resource.data.groupName is string;
+        // Cancelled by a member, or declined or used up by the person invited.
+        allow delete: if inGroup(gid) || (signedIn() && me() == uid);
+      }
     }
 
-    match /people/{pid} {
-      allow read, delete: if inCircle();
-      // An account may only link a person to itself.
-      allow create: if inCircle()
-        && (!('uid' in request.resource.data) || request.resource.data.uid == me());
-      allow update: if inCircle()
-        && (request.resource.data.get('uid', null) == resource.data.get('uid', null)
-          || request.resource.data.get('uid', null) == me());
+    // The invitations waiting for this account, across all groups.
+    match /{path=**}/invitations/{uid} {
+      allow read: if signedIn() && resource.data.to == me();
+    }
+
+    match /people/{uid} {
+      allow read: if inCircle();
+      allow create: if inCircle() && uid == me() && request.resource.data.uid == me();
+      allow update: if signedIn() && uid == me() && request.resource.data.uid == me();
     }
 
     match /members/{uid} {
       allow get: if signedIn() && me() == uid;
+      // Let in through a group invite link or someone's friend link.
       allow create: if signedIn() && me() == uid
-        && request.resource.data.keys().hasOnly(['invite', 'personId', 'joinedAt'])
-        && liveInvite(request.resource.data.invite);
+        && request.resource.data.keys().hasOnly(['invite', 'joinedAt', 'friendCode'])
+        && (liveInvite(request.resource.data.invite) || friendCode(request.resource.data.invite));
       allow update: if signedIn() && me() == uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['personId']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friendCode']);
+    }
+
+    // A personal friend link: whoever opens it can send its owner a friend request.
+    match /friendCodes/{code} {
+      allow get: if signedIn();
+      allow create: if inCircle() && code.size() >= 20
+        && request.resource.data.uid == me() && request.resource.data.keys().hasOnly(['uid', 'createdAt']);
+      allow delete: if signedIn() && resource.data.uid == me();
+    }
+
+    match /friendRequests/{id} {
+      allow read: if signedIn() && (resource.data.from == me() || resource.data.to == me());
+      allow create: if inCircle()
+        && request.resource.data.from == me()
+        && request.resource.data.to is string
+        && request.resource.data.to != me()
+        && id == me() + '_' + request.resource.data.to
+        && !friendsWith(request.resource.data.to);
+      allow delete: if signedIn() && (resource.data.from == me() || resource.data.to == me());
+    }
+
+    match /friends/{id} {
+      function other(uids) { return uids[0] == me() ? uids[1] : uids[0]; }
+      allow read: if signedIn() && me() in resource.data.uids;
+      // Accepting: only the person a request was sent to makes the friendship.
+      allow create: if signedIn()
+        && request.resource.data.uids is list && request.resource.data.uids.size() == 2
+        && me() in request.resource.data.uids
+        && request.resource.data.uids[0] < request.resource.data.uids[1]
+        && id == request.resource.data.uids[0] + '_' + request.resource.data.uids[1]
+        && exists(/databases/$(database)/documents/friendRequests/$(other(request.resource.data.uids) + '_' + me()));
+      allow delete: if signedIn() && me() in resource.data.uids;
     }
 
     match /invites/{code} {

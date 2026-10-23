@@ -65,12 +65,20 @@
     platform: !!fb,
     auth: 'pending', // 'pending' | 'out' | 'in' | 'none' (no sign-in available)
     user: null, // {uid, name, email} once signed in
-    inCircle: null, // whether this account was ever let in through an invite
-    joining: !!localGet('tab.join'),
+    inCircle: null, // whether this account was ever let in through an invite or friend link
+    joining: !!(localGet('tab.join') || localGet('tab.add')),
+    adding: !!localGet('tab.add'), // the link being opened is someone's friend link
     joinError: null,
+    notice: null, // {code, uid}: what happened to a friend link opened on this device
     canWrite: null,
-    isOwner: false, // nobody is picked automatically: each account says who it is once
-    meId: null,
+    isOwner: false,
+    meId: null, // the viewer's person id, which is their account's uid
+    friendCode: null, // the code in this account's own friend link, once made
+    friends: [], // uids of this account's friends
+    requestsIn: [], // friend requests waiting for this account: [{id, from, to, at}]
+    requestsOut: [], // friend requests this account sent that are still open
+    invitations: [], // group invitations waiting for this account: [{id, groupId, groupName, from, to, at}]
+    groupInvites: {}, // groupId -> that group's open invitations
     chatRead: readMarks(),
     chats: {}, // groupId -> that group's messages, oldest first
     photos: {}, // photo id -> data URL
@@ -162,12 +170,35 @@
       retry(key, function () { watchPart(name, groupId); }, e);
     });
   }
+  // Who has been invited to a group and hasn't answered yet.
+  var inviteStops = {};
+  function watchInvites(groupId) {
+    if (inviteStops[groupId]) return;
+    var key = 'invitations/' + groupId;
+    inviteStops[groupId] = db.collection('groups/' + groupId + '/invitations').onSnapshot(function (snap) {
+      retries[key] = 0;
+      state.groupInvites = Object.assign({}, state.groupInvites);
+      state.groupInvites[groupId] = rows(snap);
+      emit();
+    }, function () {
+      delete inviteStops[groupId];
+      retry(key, function () { watchInvites(groupId); });
+    });
+  }
   // saved: the ids of the groups the database has already stored.
   function syncGroups(saved) {
     var ids = state.groups.map(function (g) { return g.id; });
     saved.forEach(function (id) {
       watchChat(id);
+      watchInvites(id);
       PARTS.forEach(function (name) { watchPart(name, id); });
+    });
+    Object.keys(inviteStops).forEach(function (id) {
+      if (ids.indexOf(id) !== -1) return;
+      inviteStops[id]();
+      delete inviteStops[id];
+      state.groupInvites = Object.assign({}, state.groupInvites);
+      delete state.groupInvites[id];
     });
     Object.keys(chatStops).forEach(function (id) {
       if (ids.indexOf(id) !== -1) return;
@@ -194,15 +225,18 @@
     stops = [];
     Object.keys(chatStops).forEach(function (id) { chatStops[id](); });
     Object.keys(partStops).forEach(function (key) { partStops[key](); });
+    Object.keys(inviteStops).forEach(function (id) { inviteStops[id](); });
     chatStops = {};
     partStops = {};
+    inviteStops = {};
     parts = { bills: {}, payments: {} };
     arrived = {};
     retries = {};
     sample = null;
     Object.assign(state, {
-      ready: false, persistent: false, user: null, inCircle: null, meId: null, choosing: false,
+      ready: false, persistent: false, user: null, inCircle: null, meId: null, friendCode: null,
       chats: {}, photos: {}, people: [], bills: [], payments: [], groups: [],
+      friends: [], requestsIn: [], requestsOut: [], invitations: [], groupInvites: {},
       canUpload: false, canAsk: false, canScan: false, settings: localSettings()
     });
   }
@@ -221,15 +255,43 @@
       syncGroups(snap.docs.filter(function (doc) { return !doc.metadata.hasPendingWrites; }).map(function (doc) { return doc.id; }));
       arrived.groups = true;
       checkReady();
-      finishJoin();
       emit();
     }, lost));
+    var making = false;
     stops.push(db.collection('people').onSnapshot(function (snap) {
       state.people = rows(snap);
+      // Every account has its own profile; a new one starts from the Google name.
+      if (!making && !state.people.some(function (p) { return p.id === uid; })) {
+        making = true;
+        var user = auth.currentUser || {};
+        db.doc('people/' + uid).set({
+          uid: uid, name: (user.displayName || (user.email || '').split('@')[0] || '').slice(0, 40),
+          isMe: false, archived: false, avatar: { kind: 'preset', preset: uid.charCodeAt(0) % 8 }
+        }).catch(function () { making = false; });
+      }
       arrived.people = true;
       checkReady();
       emit();
     }, lost));
+    stops.push(db.collection('friends').where('uids', 'array-contains', uid).onSnapshot(function (snap) {
+      state.friends = snap.docs.map(function (doc) {
+        var uids = doc.data().uids || [];
+        return uids[0] === uid ? uids[1] : uids[0];
+      });
+      emit();
+    }, noop));
+    stops.push(db.collection('friendRequests').where('to', '==', uid).onSnapshot(function (snap) {
+      state.requestsIn = rows(snap);
+      emit();
+    }, noop));
+    stops.push(db.collection('friendRequests').where('from', '==', uid).onSnapshot(function (snap) {
+      state.requestsOut = rows(snap);
+      emit();
+    }, noop));
+    stops.push(db.collectionGroup('invitations').where('to', '==', uid).onSnapshot(function (snap) {
+      state.invitations = rows(snap);
+      emit();
+    }, noop));
     stops.push(db.doc('settings/' + uid).onSnapshot(function (snap) {
       state.settings = Object.assign(localSettings(), snap.exists ? snap.data() : {});
       arrived.settings = true;
@@ -244,30 +306,34 @@
     }, noop));
   }
 
-  // This account's own record says whether it is in the circle at all, and
-  // which person it is.
+  // This account's own record says whether it is in the circle at all. The
+  // viewer's person is their own profile, people/{uid}.
   function watchMember(uid) {
     var watching = false;
     stops.push(db.doc('members/' + uid).onSnapshot(function (snap) {
       state.inCircle = snap.exists;
-      state.meId = snap.exists ? snap.data().personId || null : null;
+      state.meId = snap.exists ? uid : null;
+      state.friendCode = snap.exists ? snap.data().friendCode || null : null;
       if (snap.exists && !watching) {
         watching = true;
         watchData(uid);
       } else if (!snap.exists) {
         state.ready = true;
       }
-      finishJoin();
       emit();
     }, lost));
   }
 
-  // An invite link (#join=CODE) is kept until the visitor has signed in.
+  // A group invite link (#join=CODE) or a friend link (#add=CODE) is kept until
+  // the visitor has signed in.
   function takeInvite() {
-    var m = /[#&]join=([A-Za-z0-9_-]{20,})/.exec(location.hash);
-    if (!m) return;
-    localSet('tab.join', m[1]);
+    var join = /[#&]join=([A-Za-z0-9_-]{20,})/.exec(location.hash);
+    var add = /[#&]add=([A-Za-z0-9_-]{20,})/.exec(location.hash);
+    if (!join && !add) return;
+    if (join) localSet('tab.join', join[1]);
+    if (add) localSet('tab.add', add[1]);
     state.joining = true;
+    state.adding = !!add;
     try {
       var params = new URLSearchParams(location.search);
       params.delete('openExternalBrowser');
@@ -276,36 +342,50 @@
     } catch (e) { /* keep the address as it is */ }
   }
 
+  // Lets this account into the circle with the code of the link it opened,
+  // unless it is in already.
+  function enterCircle(code) {
+    var mine = db.doc('members/' + me());
+    return mine.get().then(function (m) {
+      if (m.exists) return null;
+      return mine.set({ invite: code, joinedAt: Date.now() });
+    });
+  }
+
   // Joins the invite's group: first the circle (once per account), then the group.
   function redeem(code) {
     var uid = me();
+    var FV = fb.firestore.FieldValue;
     return db.doc('invites/' + code).get().then(function (snap) {
       if (!snap.exists) throw { code: 'invite_missing' };
       var invite = snap.data();
       if (invite.expiresAt && invite.expiresAt.toMillis() < Date.now()) throw { code: 'invite_expired' };
-      var mine = db.doc('members/' + uid);
-      return mine.get().then(function (m) {
-        if (m.exists) return null;
-        return mine.set({ invite: code, personId: null, joinedAt: Date.now() });
-      }).then(function () {
-        return db.doc('groups/' + invite.groupId).update({ memberUids: fb.firestore.FieldValue.arrayUnion(uid), joinCode: code });
-      }).then(function () {
-        localSet('tab.joined', invite.groupId);
+      return enterCircle(code).then(function () {
+        return db.doc('groups/' + invite.groupId).update({ memberUids: FV.arrayUnion(uid), memberIds: FV.arrayUnion(uid), joinCode: code });
       });
     }).catch(function (e) {
       throw { code: e && /^invite_/.test(e.code) ? e.code : 'join_failed' };
     });
   }
 
-  // After joining, the person this account picked goes into the group too.
-  function finishJoin() {
-    var gid = localGet('tab.joined');
-    if (!gid || !state.meId) return;
-    var group = state.groups.filter(function (g) { return g.id === gid; })[0];
-    if (!group) return;
-    localSet('tab.joined', null);
-    if ((group.memberIds || []).indexOf(state.meId) !== -1) return;
-    db.doc('groups/' + gid).update({ memberIds: fb.firestore.FieldValue.arrayUnion(state.meId) }).catch(noop);
+  // Someone's friend link: lets this account in if it is new, then sends that
+  // person a friend request. What happened is left in state.notice.
+  function redeemFriend(code) {
+    var uid = me();
+    return db.doc('friendCodes/' + code).get().then(function (snap) {
+      if (!snap.exists) throw { code: 'friend_link_bad' };
+      var owner = snap.data().uid;
+      if (owner === uid) return { code: 'friend_self', uid: owner };
+      return enterCircle(code).then(function () {
+        return db.doc('friends/' + pairId(uid, owner)).get().then(function (f) { return f.exists; }, function () { return false; });
+      }).then(function (already) {
+        if (already) return { code: 'friend_already', uid: owner };
+        return db.doc('friendRequests/' + uid + '_' + owner).set({ from: uid, to: owner, at: Date.now() })
+          .then(function () { return { code: 'friend_sent', uid: owner }; });
+      });
+    }).catch(function (e) {
+      return { code: e && e.code === 'friend_link_bad' ? 'friend_link_bad' : 'friend_failed' };
+    });
   }
 
   function signedIn(user) {
@@ -313,10 +393,15 @@
     state.user = { uid: user.uid, name: user.displayName || '', email: user.email || '' };
     emit();
     var code = localGet('tab.join');
+    var add = localGet('tab.add');
     var joined = code ? redeem(code) : Promise.resolve();
     joined.catch(function (e) { state.joinError = e.code; }).then(function () {
+      return add ? redeemFriend(add).then(function (notice) { state.notice = notice; }) : null;
+    }).then(function () {
       localSet('tab.join', null);
+      localSet('tab.add', null);
       state.joining = false;
+      state.adding = false;
       watchMember(user.uid);
     });
   }
@@ -393,19 +478,56 @@
     return out;
   }
 
-  // claim(null) means "ask me who I am". The choice is kept with the account,
-  // so it follows the viewer to other devices.
-  function claim(personId) {
-    state.meId = personId || null;
-    state.choosing = !personId;
-    emit();
+  // ---------- friends ----------
+
+  // A friendship is stored once, under the two uids in sorted order.
+  function pairId(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+
+  // The code in this account's friend link, made the first time it is asked for.
+  function friendLink() {
     var uid = me();
-    if (!db || !uid) return;
-    db.doc('members/' + uid).update({ personId: personId || null }).catch(noop);
-    var person = state.people.filter(function (p) { return p.id === personId; })[0];
-    if (personId && (!person || person.uid !== uid)) db.doc('people/' + personId).update({ uid: uid }).catch(noop);
-    finishJoin();
+    if (!db || !uid) return Promise.reject({ code: 'not_granted' });
+    if (state.friendCode) return Promise.resolve(state.friendCode);
+    var code = randomCode();
+    return db.doc('friendCodes/' + code).set({ uid: uid, createdAt: Date.now() }).then(function () {
+      return db.doc('members/' + uid).update({ friendCode: code });
+    }).then(function () {
+      state.friendCode = code;
+      emit();
+      return code;
+    });
   }
+
+  // Accepting makes the friendship; either way the request is done.
+  function acceptFriend(fromUid) {
+    var uid = me();
+    var uids = [uid, fromUid].sort();
+    return db.doc('friends/' + pairId(uid, fromUid)).set({ uids: uids, since: Date.now() }).then(function () {
+      return db.doc('friendRequests/' + fromUid + '_' + uid).delete();
+    });
+  }
+  function declineFriend(fromUid) { return db.doc('friendRequests/' + fromUid + '_' + me()).delete(); }
+  function cancelFriendRequest(toUid) { return db.doc('friendRequests/' + me() + '_' + toUid).delete(); }
+  function removeFriend(uid) { return db.doc('friends/' + pairId(me(), uid)).delete(); }
+
+  // ---------- group invitations ----------
+
+  // A member invites one of their friends; the friend joins when they accept.
+  function inviteToGroup(groupId, uid) {
+    var group = state.groups.filter(function (g) { return g.id === groupId; })[0];
+    return db.doc('groups/' + groupId + '/invitations/' + uid).set({
+      groupId: groupId, groupName: (group && group.name) || '', from: me(), to: uid, at: Date.now()
+    });
+  }
+  function cancelInvitation(groupId, uid) { return db.doc('groups/' + groupId + '/invitations/' + uid).delete(); }
+  function acceptInvitation(groupId) {
+    var uid = me();
+    var FV = fb.firestore.FieldValue;
+    return db.doc('groups/' + groupId).update({ memberUids: FV.arrayUnion(uid), memberIds: FV.arrayUnion(uid) }).then(function () {
+      return db.doc('groups/' + groupId + '/invitations/' + uid).delete();
+    });
+  }
+  function declineInvitation(groupId) { return db.doc('groups/' + groupId + '/invitations/' + me()).delete(); }
 
   function markChatRead(groupId) {
     var now = Date.now();
@@ -428,11 +550,12 @@
     });
   }
 
-  // A group goes with everything in it: bills, payments and chat. They go
-  // first, while the group still says who may delete them.
+  // A group goes with everything in it: bills, payments, chat and open
+  // invitations. They go first, while the group still says who may delete them.
   function removeGroup(groupId) {
     var jobs = [];
     (state.chats[groupId] || []).forEach(function (m) { jobs.push(remove(chatPath(groupId), m.id)); });
+    (state.groupInvites[groupId] || []).forEach(function (inv) { jobs.push(cancelInvitation(groupId, inv.id).catch(noop)); });
     PARTS.forEach(function (name) {
       state[name].forEach(function (row) { if (groupOf(row) === groupId) jobs.push(remove(name, row.id)); });
     });
@@ -459,23 +582,19 @@
     return 'groups/' + groupOf(row) + '/' + collection;
   }
 
-  // Who may open a group travels with it. A new group starts with this
-  // account alone; after that, an account loses access when its person leaves
-  // the group, and keeps it otherwise.
+  // Who may open a group travels with it, and is the same list as its members
+  // (each member is an account). A new group starts with this account alone;
+  // others join themselves, through an invitation or an invite link.
   function withAccess(id, doc) {
     var old = state.groups.filter(function (g) { return g.id === id; })[0];
     if (!old) {
       doc.ownerUid = me();
+      doc.memberIds = [me()];
       doc.memberUids = [me()];
       return doc;
     }
-    var ids = doc.memberIds || [];
     doc.ownerUid = old.ownerUid;
-    doc.memberUids = (old.memberUids || []).filter(function (uid) {
-      if (uid === old.ownerUid) return true;
-      var personId = uid === me() ? state.meId : (state.people.filter(function (p) { return p.uid === uid; })[0] || {}).id;
-      return !personId || ids.indexOf(personId) !== -1;
-    });
+    doc.memberUids = (doc.memberIds || []).slice();
     if (old.joinCode) doc.joinCode = old.joinCode;
     return doc;
   }
@@ -741,7 +860,6 @@
 
   Tab.store = {
     groupOf: groupOf,
-    claim: claim,
     markChatRead: markChatRead,
     sendMessage: sendMessage,
     removeGroup: removeGroup,
@@ -764,6 +882,16 @@
     signOut: signOut,
     inviteFor: inviteFor,
     clearJoinError: function () { state.joinError = null; emit(); },
+    clearNotice: function () { state.notice = null; emit(); },
+    friendLink: friendLink,
+    acceptFriend: acceptFriend,
+    declineFriend: declineFriend,
+    cancelFriendRequest: cancelFriendRequest,
+    removeFriend: removeFriend,
+    inviteToGroup: inviteToGroup,
+    cancelInvitation: cancelInvitation,
+    acceptInvitation: acceptInvitation,
+    declineInvitation: declineInvitation,
     testSignIn: testSignIn
   };
 })();

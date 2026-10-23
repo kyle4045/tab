@@ -426,3 +426,6 @@ button, label.btn, label.icon-btn { --glow: rgba(250, 202, 130, 0.3); -webkit-ta
   .big { font-size: 36px; }
   .two-col { flex-direction: column; }
 }
+
+/* Friend link QR code: a white card so phone cameras can read it. */
+.qr { border-radius: 16px; padding: 4px; background: #fff; }

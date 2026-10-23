@@ -82,24 +82,6 @@
       avatar: { kind: 'preset', preset: index % COLORS.length }
     }, extra || {});
   }
-  // The person in `list` with this name, ignoring case and outer spaces.
-  function findByName(list, name) {
-    var k = String(name).trim().toLowerCase();
-    return list.filter(function (p) { return String(p.name).trim().toLowerCase() === k; })[0];
-  }
-  // The id of whoever has this name (brought back if they had been removed),
-  // or of a new person made for it.
-  function personFor(c, name, extra) {
-    var match = findByName(c.people, name);
-    if (!match) {
-      var id = store.newId();
-      store.put('people', id, newPerson(String(name).trim(), c.people.length, extra));
-      return id;
-    }
-    if (match.archived) store.put('people', match.id, Object.assign({}, match, { archived: false }));
-    return match.id;
-  }
-
   // A new bill starts with the whole group there and the viewer paying.
   function newDraft(c) {
     var members = c.group.members.map(function (p) { return p.id; });
@@ -183,58 +165,6 @@
       };
       img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('decode')); };
       img.src = url;
-    });
-  }
-
-  // Returns the example "you" (for the caller to claim) and the example group.
-  function loadExample(myName, asOwner) {
-    var ids = { me: store.newId(), mei: store.newId(), arjun: store.newId(), dana: store.newId() };
-    var all = [ids.me, ids.mei, ids.arjun, ids.dana];
-    var flag = { example: true };
-    var gid = store.newId();
-    store.put('people', ids.me, newPerson(myName || t('people.you'), 0, { isMe: asOwner, example: true }));
-    store.put('people', ids.mei, newPerson('Mei', 1, flag));
-    store.put('people', ids.arjun, newPerson('Arjun', 2, flag));
-    store.put('people', ids.dana, newPerson('Dana', 3, flag));
-    store.put('groups', gid, {
-      name: t('example.group'), ownerId: ids.me, memberIds: all, preset: 1, createdAt: Date.now() - 3, example: true
-    });
-    function item(name, price, sharers) { return { id: store.newId(), name: name, price: price, sharerIds: sharers }; }
-    store.put('bills', store.newId(), {
-      groupId: gid, title: 'Hotpot night', date: daysAgoISO(2), payerId: ids.mei, presentIds: all, servicePct: 10, taxPct: null,
-      createdAt: Date.now(), example: true,
-      items: [
-        item('Soup base', 400, all),
-        item('Beef platter', 720, [ids.me, ids.mei, ids.arjun]),
-        item('Seafood set', 640, [ids.mei, ids.dana]),
-        item('Veggie basket', 240, all),
-        item('Beers ×3', 360, [ids.me, ids.arjun, ids.dana])
-      ]
-    });
-    store.put('bills', store.newId(), {
-      groupId: gid, title: 'Karaoke', date: daysAgoISO(8), payerId: ids.me, presentIds: all, servicePct: null, taxPct: null,
-      createdAt: Date.now() - 1, example: true,
-      items: [item('Room, 3 hours', 2000, all)]
-    });
-    store.put('bills', store.newId(), {
-      groupId: gid, title: 'Brunch', date: daysAgoISO(14), payerId: ids.arjun, presentIds: all, servicePct: null, taxPct: null,
-      createdAt: Date.now() - 2, example: true,
-      items: [
-        item('Brunch sets ×4', 1120, all),
-        item('Extra egg', 20, [ids.me]),
-        item('Latte', 60, [ids.mei])
-      ]
-    });
-    return { me: ids.me, group: gid };
-  }
-
-  function removeExample(data) {
-    var gone = data.groups.filter(function (g) { return g.example; }).map(function (g) { return g.id; });
-    gone.forEach(function (id) { store.removeGroup(id); });
-    ['bills', 'payments', 'people'].forEach(function (name) {
-      data[name].forEach(function (row) {
-        if (row.example && gone.indexOf(row.groupId) === -1) store.remove(name, row.id);
-      });
     });
   }
 
@@ -350,85 +280,8 @@
     return html`<button class="icon-btn text" aria-label=${t('lang.switch')} onClick=${function () { store.saveSettings({ lang: next }); }}>${p.lang === 'en' ? '中' : 'EN'}</button>`;
   }
 
-  // ---------- first run ----------
-
-  function Setup(c) {
-    var a = useState(''), name = a[0], setName = a[1];
-    var b = useState(''), friend = b[0], setFriend = b[1];
-    var f = useState([]), friends = f[0], setFriends = f[1];
-    var g = useState(''), group = g[0], setGroup = g[1];
-    var e = useState(''), err = e[0], setErr = e[1];
-
-    function addFriend(ev) {
-      ev.preventDefault();
-      var n = friend.trim();
-      if (!n) return;
-      if (friends.indexOf(n) === -1) setFriends(friends.concat(n));
-      setFriend('');
-    }
-    function begin() {
-      var mine = name.trim();
-      if (!mine) { setErr(t('setup.needName')); return; }
-      var all = friends.slice();
-      var pending = friend.trim();
-      if (pending && all.indexOf(pending) === -1) all.push(pending);
-      var id = store.newId();
-      var memberIds = [id];
-      store.put('people', id, newPerson(mine, 0, { isMe: asOwner }));
-      all.forEach(function (n, i) {
-        var pid = store.newId();
-        memberIds.push(pid);
-        store.put('people', pid, newPerson(n, i + 1));
-      });
-      var gid = store.newId();
-      store.put('groups', gid, { name: group.trim() || t('group.default'), ownerId: id, memberIds: memberIds, preset: 0, createdAt: Date.now() });
-      store.claim(id);
-      c.go('group', null, gid);
-    }
-    function example() {
-      var ex = loadExample(name.trim(), asOwner);
-      store.claim(ex.me);
-      c.go('group', null, ex.group);
-    }
-    // The stored isMe flag marks the page owner's own person; everyone else
-    // says who they are on their own device.
-    var asOwner = c.data.isOwner !== false;
-
-    return html`
-      <${Head} title="Tab" right=${html`<${LangButton} lang=${c.lang} />`} />
-      <section class="section">
-        <p class="lead-title">${t('setup.title')}</p>
-        <p class="muted">${t('setup.lead')}</p>
-      </section>
-      <section class="section">
-        <label class="eyebrow" for="setup-name">${t('setup.yourName')}</label>
-        <input id="setup-name" class="field" value=${name} autocomplete="off" onInput=${function (ev) { setName(ev.target.value); setErr(''); }} />
-        ${err && html`<p class="warn-text" role="alert">${err}</p>`}
-      </section>
-      <section class="section">
-        <label class="eyebrow" for="setup-friend">${t('setup.friends')}</label>
-        ${friends.length > 0 && html`<div class="pills">
-          ${friends.map(function (n) {
-            return html`<button key=${n} class="pill on" aria-label=${t('item.remove', { name: n })} onClick=${function () { setFriends(friends.filter(function (x) { return x !== n; })); }}>${n}<${Icon} name="close" size=${14} /></button>`;
-          })}
-        </div>`}
-        <form class="add-row" onSubmit=${addFriend}>
-          <input id="setup-friend" class="field" placeholder=${t('setup.friendPh')} value=${friend} autocomplete="off" onInput=${function (ev) { setFriend(ev.target.value); }} />
-          <button class="btn small secondary" type="submit">${t('setup.add')}</button>
-        </form>
-      </section>
-      <section class="section">
-        <label class="eyebrow" for="setup-group">${t('setup.group')}</label>
-        <input id="setup-group" class="field" placeholder=${t('setup.groupPh')} value=${group} autocomplete="off" onInput=${function (ev) { setGroup(ev.target.value); }} />
-      </section>
-      <div class="stack">
-        <button class="btn" onClick=${begin}>${t('setup.start')}</button>
-        <button class="btn ghost" onClick=${example}>${t('setup.example')}</button>
-      </div>`;
-  }
-
-  // Shown inside Claude when this view has no shared store. Without it the page
-  // could only pretend, and a group made here would exist on this screen alone.
+  // Shown when the database can't be reached. Without it the page could only
+  // pretend, and a group made here would exist on this screen alone.
   function Disconnected(c) {
     return html`
       <${Head} title="Tab" />
@@ -466,8 +319,8 @@
     return html`
       <${Head} title="Tab" right=${html`<${LangButton} lang=${p.lang} />`} />
       <section class="section">
-        <p class="lead-title">${p.data.joining ? t('signin.joinTitle') : t('signin.title')}</p>
-        <p class="muted">${p.data.joining ? t('signin.joinLead') : t('signin.lead')}</p>
+        <p class="lead-title">${p.data.adding ? t('signin.addTitle') : p.data.joining ? t('signin.joinTitle') : t('signin.title')}</p>
+        <p class="muted">${p.data.adding ? t('signin.addLead') : p.data.joining ? t('signin.joinLead') : t('signin.lead')}</p>
       </section>
       ${inApp && html`<p class="banner warn" role="status">${t('signin.inApp')}</p>`}
       <div class="stack">
@@ -496,43 +349,6 @@
       </div>`;
   }
 
-  // Shown to someone who opens an existing group on a device that doesn't know
-  // who they are yet.
-  function WhoAmI(c) {
-    var o = useState(false), open = o[0], setOpen = o[1];
-    var n = useState(''), name = n[0], setName = n[1];
-    var visible = c.people.filter(function (p) { return !p.archived; });
-
-    function join(ev) {
-      ev.preventDefault();
-      var clean = name.trim();
-      if (clean) store.claim(personFor(c, clean));
-    }
-
-    return html`
-      <${Head} title="Tab" right=${html`<${LangButton} lang=${c.lang} />`} />
-      <section class="section">
-        <p class="lead-title">${t('who.title')}</p>
-        <p class="muted">${t('who.lead')}</p>
-      </section>
-      <section class="section">
-        <div class="list">
-          ${visible.map(function (p) {
-            return html`<button class="row tap" key=${p.id} onClick=${function () { store.claim(p.id); }}>
-              <${Avatar} person=${p} size=${40} />
-              <span class="row-main row-title">${p.name}</span>
-              <${Icon} name="arrow" size=${16} />
-            </button>`;
-          })}
-        </div>
-        ${!open && html`<button class="btn dashed" onClick=${function () { setOpen(true); }}>${t('who.notListed')}</button>`}
-        ${open && html`<form class="add-row" onSubmit=${join}>
-          <input id="who-name" class="field" aria-label=${t('setup.yourName')} placeholder=${t('setup.yourName')} value=${name} autocomplete="off" onInput=${function (e) { setName(e.target.value); }} />
-          <button class="btn small" type="submit">${t('who.join')}</button>
-        </form>`}
-      </section>`;
-  }
-
   // ---------- home ----------
 
   // The viewer's groups, most recently active first, like a list of chats:
@@ -551,9 +367,16 @@
       setPressed(true);
       timer.current = setTimeout(function () { c.go('settleAll', null, null); }, reducedMotion() ? 0 : 420);
     }
-    var hasExample = ['people', 'bills', 'payments', 'groups'].some(function (name) {
-      return c.data[name].some(function (row) { return row.example; });
-    });
+    var invitations = c.data.invitations;
+
+    function join(inv) {
+      store.acceptInvitation(inv.groupId).then(function () {
+        c.say(t('groups.joined', { group: inv.groupName }));
+      }, function () { c.say(t('app.saveFailed')); });
+    }
+    function decline(inv) {
+      store.declineInvitation(inv.groupId).catch(function () { c.say(t('app.saveFailed')); });
+    }
 
     return html`
       <${Head}
@@ -561,10 +384,22 @@
         right=${html`<button class="icon-btn" aria-label=${t('groups.new')} onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" weight=${2.5} /></button>`}
       />
 
-      ${hasExample && html`<div class="banner">
-        <span>${t('home.example')}</span>
-        <button class="link" onClick=${function () { removeExample(c.data); }}>${t('home.removeExample')}</button>
-      </div>`}
+      ${invitations.length > 0 && html`<section class="section">
+        <h2 class="eyebrow">${t('groups.invitations')}</h2>
+        <div class="list">
+          ${invitations.map(function (inv) {
+            return html`<div class="row" key=${inv.groupId}>
+              <${Avatar} person=${c.byId[inv.from] || { name: '?' }} size=${40} />
+              <span class="row-main">
+                <span class="row-title">${inv.groupName}</span>
+                <span class="row-sub">${t('groups.invitedBy', { name: nameOf(c.byId[inv.from]) })}</span>
+              </span>
+              <button class="btn small" onClick=${function () { join(inv); }}>${t('groups.join')}</button>
+              <button class="btn small ghost" onClick=${function () { decline(inv); }}>${t('groups.decline')}</button>
+            </div>`;
+          })}
+        </div>
+      </section>`}
 
       ${c.groups.some(function (g) { return g.bills.length; }) && html`<button type="button" class=${'card hero live' + (pressed ? ' pressed' : '')} onClick=${openSettle}>
         <span class="muted">${mine > 0 ? t('home.owed') : mine < 0 ? t('home.owe') : t('home.square')}</span>
@@ -623,11 +458,6 @@
         sub=${plural('groups.members', g.members.length)}
         right=${html`<button class="icon-btn" aria-label=${t('members.title')} onClick=${function () { c.go('members'); }}><${Icon} name="users" /></button>`}
       />
-
-      ${g.example && html`<div class="banner">
-        <span>${t('home.example')}</span>
-        <button class="link" onClick=${function () { removeExample(c.data); c.go('home', null, null); }}>${t('home.removeExample')}</button>
-      </div>`}
 
       <button class="chat-link" aria-label=${g.unread ? t('chat.openN', { n: g.unread }) : t('chat.open')} onClick=${function () { c.go('chat'); }}>
         <span class="chat-link-icon"><${Icon} name="chat" /></span>
@@ -694,8 +524,6 @@
 
   function Editor(c) {
     var draft = c.draft;
-    var g = useState(false), guestOpen = g[0], setGuestOpen = g[1];
-    var gn = useState(''), guestName = gn[0], setGuestName = gn[1];
     var nn = useState(''), newName = nn[0], setNewName = nn[1];
     var np = useState(''), newPrice = np[0], setNewPrice = np[1];
     var nameRef = useRef(null);
@@ -716,16 +544,6 @@
       var next = draft.presentIds.filter(function (x) { return x !== id; });
       if (!next.length) return;
       upd({ presentIds: next, payerId: draft.payerId === id ? next[0] : draft.payerId });
-    }
-    // Someone from outside the group came along: reuse them if the app knows them.
-    function addGuest(ev) {
-      ev.preventDefault();
-      var n = guestName.trim();
-      if (!n) return;
-      var id = personFor(c, n);
-      if (!isHere(id)) upd({ presentIds: draft.presentIds.concat(id) });
-      setGuestName('');
-      setGuestOpen(false);
     }
     function updItem(id, patch) {
       upd({ items: draft.items.map(function (it) { return it.id === id ? Object.assign({}, it, patch) : it; }) });
@@ -780,15 +598,7 @@
               <span class="who-name">${p.name}</span>
             </button>`;
           })}
-          <button class="who" aria-expanded=${guestOpen ? 'true' : 'false'} onClick=${function () { setGuestOpen(!guestOpen); }}>
-            <span class="avatar dashed" style="width:44px;height:44px"><${Icon} name="plus" size=${18} weight=${2.5} /></span>
-            <span class="who-name muted">${t('edit.newPerson')}</span>
-          </button>
         </div>
-        ${guestOpen && html`<form class="add-row" onSubmit=${addGuest}>
-          <input id="guest-name" class="field" aria-label=${t('edit.guestPh')} placeholder=${t('edit.guestPh')} value=${guestName} autocomplete="off" onInput=${function (e) { setGuestName(e.target.value); }} />
-          <button class="btn small secondary" type="submit">${t('setup.add')}</button>
-        </form>`}
       </section>
 
       <section class="section">
@@ -1023,9 +833,8 @@
   // stands, with people written as names (it never sees ids).
   function aiContext(c, draft) {
     function nm(id) { return nameOf(c.byId[id]); }
-    var known = c.people.filter(function (p) { return !p.archived; }).map(function (p) {
-      return '- ' + p.name + (p.mine ? ' (me)' : c.group.memberIds.indexOf(p.id) !== -1 ? '' : ' (not in this group, comes sometimes)');
-    });
+    // Only the group's members can be on its bills.
+    var known = c.group.members.map(function (p) { return '- ' + p.name + (p.mine ? ' (me)' : ''); });
     var bill = draftToBill(draft);
     var current = {
       title: bill.title,
@@ -1045,23 +854,20 @@
   }
 
   // Turn the assistant's bill (people as names) back into a draft (people as ids).
-  // A name nobody has yet becomes a new "comes sometimes" person.
+  // Only the group's members can be on it: a name that isn't one of them is
+  // left out and reported in `unknown`.
   function applyAiBill(c, draft, ai) {
     function key(name) { return String(name).trim().toLowerCase(); }
     var byName = {};
-    c.people.filter(function (p) { return p.archived; })
-      .concat(c.people.filter(function (p) { return !p.archived; }))
-      .forEach(function (p) { byName[key(p.name)] = p.id; });
+    c.group.members.forEach(function (p) { byName[key(p.name)] = p.id; });
 
-    var added = [];
+    var unknown = [];
     function idFor(name) {
       var k = key(name);
       if (!k) return null;
       if (!byName[k]) {
-        var id = store.newId();
-        store.put('people', id, newPerson(String(name).trim(), c.people.length + added.length, c.me.example ? { example: true } : null));
-        byName[k] = id;
-        added.push(String(name).trim());
+        if (unknown.indexOf(String(name).trim()) === -1) unknown.push(String(name).trim());
+        return null;
       }
       return byName[k];
     }
@@ -1087,7 +893,7 @@
       : present.indexOf(c.me.id) !== -1 ? c.me.id : present[0];
 
     return {
-      added: added,
+      unknown: unknown,
       draft: Object.assign({}, draft, {
         title: ai.title || draft.title,
         date: ai.date || draft.date,
@@ -1140,7 +946,7 @@
         var applied = applyAiBill(now, now.draft, res.bill);
         now.setDraft(applied.draft);
         var next = now.chat.concat({ role: 'assistant', text: res.reply || t('ai.done') });
-        applied.added.forEach(function (name) { next.push({ role: 'note', text: t('ai.added', { name: name }) }); });
+        applied.unknown.forEach(function (name) { next.push({ role: 'note', text: t('ai.notInGroup', { name: name }) }); });
         now.setChat(next);
         setBusy(false);
       }, function (err) {
@@ -1500,45 +1306,24 @@
   // ---------- groups ----------
 
   // Whoever makes a group runs it: only they add or remove its members.
+  // A new group starts with the viewer alone; the friends picked here get an
+  // invitation and join when they accept it.
   function NewGroup(c) {
     var n = useState(''), name = n[0], setName = n[1];
     var p = useState([]), picked = p[0], setPicked = p[1];
-    var nn = useState([]), newNames = nn[0], setNewNames = nn[1];
-    var f = useState(''), friend = f[0], setFriend = f[1];
     var e = useState(''), err = e[0], setErr = e[1];
-    var others = c.people.filter(function (x) { return !x.archived && !x.mine; });
 
     function toggle(id) {
       setPicked(picked.indexOf(id) === -1 ? picked.concat(id) : picked.filter(function (x) { return x !== id; }));
     }
-    function addFriend(ev) {
-      ev.preventDefault();
-      var clean = friend.trim();
-      if (!clean) return;
-      var match = findByName(others, clean);
-      if (match) { if (picked.indexOf(match.id) === -1) setPicked(picked.concat(match.id)); }
-      else if (newNames.indexOf(clean) === -1) setNewNames(newNames.concat(clean));
-      setFriend('');
-    }
     function create() {
       var clean = name.trim();
       if (!clean) { setErr(t('newGroup.needName')); return; }
-      var memberIds = [c.me.id].concat(picked);
-      var names = newNames.slice();
-      var pending = friend.trim();
-      if (pending) {
-        var match = findByName(others, pending);
-        if (match && memberIds.indexOf(match.id) === -1) memberIds.push(match.id);
-        else if (!match && names.indexOf(pending) === -1) names.push(pending);
-      }
-      names.forEach(function (nm, i) {
-        var id = store.newId();
-        store.put('people', id, newPerson(nm, c.people.length + i));
-        memberIds.push(id);
-      });
       var gid = store.newId();
       store.put('groups', gid, {
-        name: clean, ownerId: c.me.id, memberIds: memberIds, preset: c.allGroups.length % COLORS.length, createdAt: Date.now()
+        name: clean, ownerId: c.me.id, memberIds: [c.me.id], preset: c.allGroups.length % COLORS.length, createdAt: Date.now()
+      }).then(function () {
+        return Promise.all(picked.map(function (uid) { return store.inviteToGroup(gid, uid); }));
       }).catch(function () { c.say(t('app.saveFailed')); });
       c.go('group', null, gid);
     }
@@ -1555,31 +1340,22 @@
       <section class="section">
         <div class="eyebrow-row">
           <h2 class="eyebrow">${t('newGroup.who')}</h2>
-          <span class="hint">${t('newGroup.picked', { n: picked.length + newNames.length })}</span>
+          <span class="hint">${t('newGroup.picked', { n: picked.length })}</span>
         </div>
         <div class="who-row">
           <span class="who">
             <${Avatar} person=${c.me} size=${44} />
             <span class="who-name">${t('people.you')}</span>
           </span>
-          ${others.map(function (x) {
+          ${c.friends.map(function (x) {
             var on = picked.indexOf(x.id) !== -1;
             return html`<button key=${x.id} class=${'who' + (on ? '' : ' off')} aria-pressed=${on ? 'true' : 'false'} onClick=${function () { toggle(x.id); }}>
               <${Avatar} person=${x} size=${44} />
               <span class="who-name">${x.name}</span>
             </button>`;
           })}
-          ${newNames.map(function (nm, i) {
-            return html`<button key=${'new' + nm} class="who" aria-label=${t('item.remove', { name: nm })} onClick=${function () { setNewNames(newNames.filter(function (x) { return x !== nm; })); }}>
-              <${Avatar} person=${{ name: nm, avatar: { kind: 'preset', preset: (c.people.length + i) % COLORS.length } }} size=${44} />
-              <span class="who-name">${nm}</span>
-            </button>`;
-          })}
         </div>
-        <form class="add-row" onSubmit=${addFriend}>
-          <input id="new-group-friend" class="field" aria-label=${t('newGroup.newFriend')} placeholder=${t('newGroup.newFriend')} value=${friend} autocomplete="off" onInput=${function (ev) { setFriend(ev.target.value); }} />
-          <button class="btn small secondary" type="submit">${t('setup.add')}</button>
-        </form>
+        <p class="muted small">${c.friends.length ? t('newGroup.inviteNote') : t('newGroup.noFriends')}</p>
       </section>
 
       <p class="muted small">${t('newGroup.adminNote')}</p>
@@ -1591,12 +1367,10 @@
   function Members(c) {
     var g = c.group;
     var owner = c.byId[g.ownerId];
-    // If whoever made the group is gone, the page's owner can look after it.
-    var admin = g.ownerId === c.me.id || ((!owner || owner.archived) && c.data.isOwner === true);
+    var admin = g.ownerId === c.me.id;
     var ms = useState(g.memberIds), ids = ms[0], setIds = ms[1];
     var nm = useState(g.name), name = nm[0], setName = nm[1];
     var ak = useState(null), asking = ak[0], setAsking = ak[1]; // {kind: 'remove', id} | {kind: 'leave'} | {kind: 'delete'}
-    var f = useState(''), friend = f[0], setFriend = f[1];
 
     // Kept here as well as in the store so quick taps build on each other.
     var key = g.memberIds.join(',');
@@ -1604,25 +1378,20 @@
 
     var members = c.people.filter(function (p) { return !p.archived && ids.indexOf(p.id) !== -1; })
       .sort(function (x, y) { return (y.id === g.ownerId) - (x.id === g.ownerId); });
-    var others = c.people.filter(function (p) { return !p.archived && ids.indexOf(p.id) === -1; });
+    // Invited and not answered yet; and the friends who could still be invited.
+    var invites = c.data.groupInvites[g.id] || [];
+    var invitedIds = invites.map(function (inv) { return inv.id; });
+    var invited = invitedIds.map(function (id) { return c.byId[id] || { id: id, name: t('person.unknown') }; });
+    var others = c.friends.filter(function (p) { return ids.indexOf(p.id) === -1 && invitedIds.indexOf(p.id) === -1; });
 
     function setMembers(next) {
       setIds(next);
       saveGroup(g, { memberIds: next }).catch(function () { c.say(t('app.saveFailed')); });
     }
-    function add(person) {
-      setMembers(ids.concat(person.id));
-      c.say(t('members.added', { name: person.name }));
-    }
-    function addNew(ev) {
-      ev.preventDefault();
-      var clean = friend.trim();
-      if (!clean) return;
-      setFriend('');
-      var id = personFor(c, clean);
-      if (ids.indexOf(id) !== -1) return;
-      setMembers(ids.concat(id));
-      c.say(t('members.added', { name: clean }));
+    function invite(person) {
+      store.inviteToGroup(g.id, person.id).then(function () {
+        c.say(t('members.inviteSent', { name: person.name }));
+      }, function () { c.say(t('app.saveFailed')); });
     }
     function rename(value) {
       var clean = value.trim();
@@ -1686,20 +1455,32 @@
         ${!admin && html`<p class="muted small">${t('members.onlyAdmin', { name: nameOf(owner) })}</p>`}
       </section>
 
+      ${invited.length > 0 && html`<section class="section">
+        <h2 class="eyebrow">${t('members.invited')}</h2>
+        <div class="list">
+          ${invited.map(function (p) {
+            return html`<div class="row" key=${p.id}>
+              <${Avatar} person=${p} size=${40} />
+              <span class="row-main">
+                <span class="row-title">${p.name}</span>
+                <span class="row-sub">${t('members.waiting')}</span>
+              </span>
+              ${admin && html`<button class="icon-btn bare muted" aria-label=${t('members.cancelInvite', { name: p.name })} onClick=${function () { store.cancelInvitation(g.id, p.id).catch(function () { c.say(t('app.saveFailed')); }); }}><${Icon} name="close" size=${18} /></button>`}
+            </div>`;
+          })}
+        </div>
+      </section>`}
+
       ${admin && html`<section class="section">
-        <h2 class="eyebrow">${t('members.add')}</h2>
+        <h2 class="eyebrow">${t('members.invite')}</h2>
         ${others.length > 0 && html`<div class="pills">
           ${others.map(function (p) {
-            return html`<button key=${p.id} class="pill chip" onClick=${function () { add(p); }}>
+            return html`<button key=${p.id} class="pill chip" onClick=${function () { invite(p); }}>
               <${Avatar} person=${p} size=${24} />${p.name}<${Icon} name="plus" size=${14} weight=${2.5} />
             </button>`;
           })}
         </div>`}
-        <form class="add-row" onSubmit=${addNew}>
-          <input id="member-name" class="field" aria-label=${t('newGroup.newFriend')} placeholder=${t('newGroup.newFriend')} value=${friend} autocomplete="off" onInput=${function (e) { setFriend(e.target.value); }} />
-          <button class="btn small secondary" type="submit">${t('setup.add')}</button>
-        </form>
-        <p class="muted small">${t('members.inviteNote')} <button class="link inline" onClick=${function () { c.go('invite', null, undefined, 'members'); }}>${t('invite.open')}</button></p>
+        <p class="muted small">${others.length ? t('members.inviteNote') : t('members.noFriends')} <button class="link inline" onClick=${function () { c.go('invite', null, undefined, 'members'); }}>${t('invite.open')}</button></p>
       </section>`}
 
       <div class="stack grow-top">
@@ -1716,35 +1497,124 @@
 
   // ---------- people and profile ----------
 
-  // Everyone the app knows, across all groups.
+  // The viewer's friends, and the friend requests on their way in and out.
   function People(c) {
-    var visible = c.people.filter(function (p) { return !p.archived; });
     function groupCount(p) {
-      return c.allGroups.filter(function (g) { return g.memberIds.indexOf(p.id) !== -1; }).length;
+      return c.groups.filter(function (g) { return g.memberIds.indexOf(p.id) !== -1; }).length;
     }
+    function person(id) { return c.byId[id] || { id: id, name: t('person.unknown') }; }
+    function accept(id) {
+      store.acceptFriend(id).then(function () {
+        c.say(t('friends.accepted', { name: nameOf(c.byId[id]) }));
+      }, function () { c.say(t('app.saveFailed')); });
+    }
+    function fail() { c.say(t('app.saveFailed')); }
+    var incoming = c.data.requestsIn.map(function (r) { return person(r.from); });
+    var outgoing = c.data.requestsOut.map(function (r) { return person(r.to); });
 
     return html`
-      <${Head} title=${t('people.title')} />
+      <${Head} title=${t('people.title')}
+        right=${html`<button class="icon-btn" aria-label=${t('friends.add')} onClick=${function () { c.go('addFriend'); }}><${Icon} name="plus" weight=${2.5} /></button>`} />
+
+      ${incoming.length > 0 && html`<section class="section">
+        <h2 class="eyebrow">${t('friends.requests')}</h2>
+        <div class="list">
+          ${incoming.map(function (p) {
+            return html`<div class="row" key=${p.id}>
+              <${Avatar} person=${p} size=${40} />
+              <span class="row-main row-title">${p.name}</span>
+              <button class="btn small" onClick=${function () { accept(p.id); }}>${t('friends.accept')}</button>
+              <button class="btn small ghost" onClick=${function () { store.declineFriend(p.id).catch(fail); }}>${t('friends.decline')}</button>
+            </div>`;
+          })}
+        </div>
+      </section>`}
 
       <section class="section">
+        ${c.friends.length === 0 && html`<p class="empty">${t('friends.none')}</p>`}
         <div class="list">
-          ${visible.map(function (p) {
+          ${c.friends.map(function (p) {
             var n = groupCount(p);
             return html`<button class="row tap" key=${p.id} onClick=${function () { c.go('person', p.id); }}>
               <${Avatar} person=${p} size=${40} />
-              <span class="row-main">
-                <span class="row-title">${p.name}</span>
-                ${p.mine && html`<span class="row-sub">${t('people.you')}</span>`}
-              </span>
+              <span class="row-main row-title">${p.name}</span>
               <span class="hint">${n ? plural('people.inGroups', n) : t('people.noGroup')}</span>
               <${Icon} name="arrow" size=${16} />
             </button>`;
           })}
         </div>
-        <button class="btn dashed" onClick=${function () { c.go('person', null); }}><${Icon} name="plus" size=${18} weight=${2.5} />${t('people.add')}</button>
-        <button class="btn secondary" onClick=${function () { c.go('invite'); }}>${t('invite.open')}</button>
-      </section>`;
+        <button class="btn" onClick=${function () { c.go('addFriend'); }}><${Icon} name="plus" size=${18} weight=${2.5} />${t('friends.add')}</button>
+      </section>
+
+      ${outgoing.length > 0 && html`<section class="section">
+        <h2 class="eyebrow">${t('friends.sent')}</h2>
+        <div class="list">
+          ${outgoing.map(function (p) {
+            return html`<div class="row" key=${p.id}>
+              <${Avatar} person=${p} size=${40} />
+              <span class="row-main">
+                <span class="row-title">${p.name}</span>
+                <span class="row-sub">${t('members.waiting')}</span>
+              </span>
+              <button class="btn small ghost" onClick=${function () { store.cancelFriendRequest(p.id).catch(fail); }}>${t('friends.cancel')}</button>
+            </div>`;
+          })}
+        </div>
+      </section>`}`;
   }
+
+  // A QR code drawn as SVG squares, dark on light so phone cameras read it.
+  function Qr(p) {
+    if (!window.qrcode) return null;
+    var qr = window.qrcode(0, 'M');
+    qr.addData(p.text);
+    qr.make();
+    var n = qr.getModuleCount();
+    var d = '';
+    for (var r = 0; r < n; r++) {
+      for (var col = 0; col < n; col++) if (qr.isDark(r, col)) d += 'M' + (col + 2) + ' ' + (r + 2) + 'h1v1h-1z';
+    }
+    return html`<svg class="qr" role="img" aria-label=${p.label} viewBox=${'0 0 ' + (n + 4) + ' ' + (n + 4)} width="208" height="208" shape-rendering="crispEdges">
+      <rect width="100%" height="100%" fill="#fff" /><path d=${d} fill="#111" />
+    </svg>`;
+  }
+
+  // The viewer's own friend link: whoever opens it and signs in sends them a
+  // friend request. It also lets a new friend into Tab, which is invite-only.
+  function AddFriend(c) {
+    var l = useState({ link: '', failed: false }), made = l[0], setMade = l[1];
+    useEffect(function () {
+      var live = true;
+      store.friendLink().then(function (code) {
+        if (live) setMade({ link: location.origin + location.pathname + '?openExternalBrowser=1#add=' + code, failed: false });
+      }, function () { if (live) setMade({ link: '', failed: true }); });
+      return function () { live = false; };
+    }, []);
+    var link = made.link;
+
+    return html`
+      <${Head} onBack=${function () { c.go(c.from || 'people'); }} title=${t('friends.add')} />
+      <p class="muted">${t('friends.linkLead')}</p>
+
+      <section class="section center">
+        ${link && html`<${Qr} text=${link} label=${t('friends.qr')} />`}
+        ${!link && !made.failed && html`<p class="muted">${t('invite.making')}</p>`}
+        ${made.failed && html`<p class="warn-text" role="alert">${t('friends.linkFailed')}</p>`}
+      </section>
+
+      <section class="section">
+        <label class="eyebrow" for="friend-link">${t('friends.linkTitle')}</label>
+        <div class="add-row">
+          <input id="friend-link" class="field" readonly value=${link} onFocus=${function (e) { e.target.select(); }} />
+          <button class="btn small secondary" disabled=${!link} onClick=${function () { c.copy(link); }}><${Icon} name="copy" size=${16} />${t('invite.copyLink')}</button>
+        </div>
+      </section>
+
+      <div class="stack grow-top">
+        <button class="btn" disabled=${!link} onClick=${function () { c.line(t('friends.shareMsg', { link: link })); }}><${Icon} name="send" />${t('friends.sendLine')}</button>
+      </div>`;
+  }
+
 
   // ---------- tabs: settle, me ----------
 
@@ -1821,7 +1691,7 @@
 
       <div class="stack grow-top">
         ${c.data.user && html`<p class="muted small">${t('me.signedInAs', { email: c.data.user.email })}</p>`}
-        <button class="btn ghost" onClick=${function () { c.go('home', null, null); store.claim(null); }}>${t('person.notMe')}</button>
+        <button class="btn secondary" onClick=${function () { c.go('addFriend', null, undefined, 'me'); }}><${Icon} name="users" size=${18} />${t('friends.myLink')}</button>
         <button class="btn ghost" onClick=${function () { c.go('home', null, null); store.signOut(); }}>${t('me.signOut')}</button>
       </div>`;
   }
@@ -1919,12 +1789,12 @@
     var a = useState(existing && existing.avatar ? existing.avatar : { kind: 'preset', preset: c.people.length % COLORS.length }), avatar = a[0], setAvatar = a[1];
     var b = useState(false), busy = b[0], setBusy = b[1];
     var e = useState(''), err = e[0], setErr = e[1];
-    var k = useState(false), confirming = k[0], setConfirming = k[1];
     var unsaved = useRef(null); // photo uploaded on this screen that no saved row points at yet
 
     if (c.id && !existing) return html`<${Head} onBack=${function () { c.go(c.from || 'people'); }} title=${t('person.title')} />`;
 
     var isMe = !!(existing && existing.mine);
+    if (existing && !isMe) return html`<${FriendProfile} ...${c} person=${existing} />`;
     var savedPhoto = existing && existing.avatar && existing.avatar.kind === 'photo' ? existing.avatar.assetId : null;
 
     function onPhoto(file) {
@@ -1954,17 +1824,6 @@
       c.say(t('person.saved'));
       c.go(c.from || 'people');
     }
-    function removePerson() {
-      var used = c.data.bills.some(function (bill) { return bill.payerId === c.id || (bill.presentIds || []).indexOf(c.id) !== -1; }) ||
-        c.data.payments.some(function (p) { return p.fromId === c.id || p.toId === c.id; });
-      if (used) {
-        store.put('people', c.id, Object.assign({}, existing, { archived: true }));
-      } else {
-        store.remove('people', c.id).then(function () { store.deletePhoto(savedPhoto); }, function () {});
-      }
-      c.go(c.from || 'people');
-    }
-
     return html`
       <${Head} onBack=${function () { c.go(c.from || 'people'); }} title=${existing ? t('person.title') : t('person.new')} />
 
@@ -1996,10 +1855,31 @@
 
       <div class="stack grow-top">
         <button class="btn" disabled=${busy} onClick=${save}>${t('person.save')}</button>
-        ${isMe && html`<button class="btn ghost" onClick=${function () { c.go('home', null, null); store.claim(null); }}>${t('person.notMe')}</button>`}
-        ${existing && !isMe && !confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}>${t('person.remove')}</button>`}
-        ${confirming && html`<${Confirm} text=${t('person.removeAsk', { name: existing.name })} label=${t('common.remove')}
-          onCancel=${function () { setConfirming(false); }} onConfirm=${removePerson} />`}
+      </div>`;
+  }
+
+  // Someone else's profile: only they can change it. A friend can be removed
+  // here; groups you share stay as they are.
+  function FriendProfile(c) {
+    var p = c.person;
+    var k = useState(false), confirming = k[0], setConfirming = k[1];
+    var friend = c.data.friends.indexOf(p.id) !== -1;
+    var shared = c.groups.filter(function (g) { return g.memberIds.indexOf(p.id) !== -1; });
+    function unfriend() {
+      store.removeFriend(p.id).catch(function () { c.say(t('app.saveFailed')); });
+      c.go(c.from || 'people');
+    }
+    return html`
+      <${Head} onBack=${function () { c.go(c.from || 'people'); }} title=${t('person.title')} />
+      <section class="section center">
+        <${Avatar} person=${p} size=${112} />
+        <p class="lead-title">${p.name}</p>
+        <p class="muted">${shared.length ? shared.map(function (g) { return g.name; }).join(' · ') : t('people.noGroup')}</p>
+      </section>
+      <div class="stack grow-top">
+        ${friend && !confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}>${t('friends.remove')}</button>`}
+        ${confirming && html`<${Confirm} text=${t('friends.removeAsk', { name: p.name })} label=${t('common.remove')}
+          onCancel=${function () { setConfirming(false); }} onConfirm=${unfriend} />`}
       </div>`;
   }
 
@@ -2038,22 +1918,22 @@
     live.draft = draft;
     live.chat = chat;
 
-    // Who the viewer is: what this device remembers, or, for the page's owner,
-    // the person they set up as themselves. Anyone else is asked once.
-    function active(id) { return data.people.some(function (p) { return p.id === id && !p.archived; }); }
-    var ownerPerson = data.people.filter(function (p) { return p.isMe && !p.archived; })[0];
-    var meId = data.meId && active(data.meId) ? data.meId
-      : data.isOwner === true && ownerPerson && !data.choosing ? ownerPerson.id
-      : null;
-    useEffect(function () {
-      if (data.ready && meId && meId !== data.meId) store.claim(meId);
-    }, [data.ready, meId, data.meId]);
+    // The viewer is their own account: their person is their profile, people/{uid}.
+    var meId = data.meId;
     // An invite link that didn't work, opened by someone already in: just say so.
     useEffect(function () {
       if (!data.joinError || !data.inCircle) return;
       setToast(joinErrorText(data.joinError));
       store.clearJoinError();
     }, [data.joinError, data.inCircle]);
+    // What happened to a friend link opened on this device.
+    var noticeName = data.notice && data.notice.uid ? nameOf(data.people.filter(function (p) { return p.id === data.notice.uid; })[0]) : '';
+    // It waits until the profiles have arrived, so it can say whose link it was.
+    useEffect(function () {
+      if (!data.notice || !data.inCircle || !data.ready) return;
+      setToast(t('friends.' + data.notice.code, { name: noticeName }));
+      store.clearNotice();
+    }, [data.notice, data.inCircle, data.ready]);
 
     if (!data.ready) return html`<main class="app"><p class="boot">${t('app.loading')}</p></main>`;
     if (data.auth === 'out') return html`<main class="app"><${SignIn} data=${data} lang=${lang} /></main>`;
@@ -2067,7 +1947,7 @@
     var byId = {};
     people.forEach(function (p) { byId[p.id] = p; });
     var me = meId ? byId[meId] : null;
-    var anyone = people.some(function (p) { return !p.archived; });
+    var friends = people.filter(function (p) { return data.friends.indexOf(p.id) !== -1; });
 
     // Each group with what the screens need: its people, bills, chat and sums.
     function groupView(g) {
@@ -2125,7 +2005,7 @@
     }
 
     var c = {
-      data: data, people: people, byId: byId, me: me, lang: lang, go: go, copy: copy, line: line, say: setToast,
+      data: data, people: people, byId: byId, me: me, friends: friends, lang: lang, go: go, copy: copy, line: line, say: setToast,
       groups: groups, allGroups: allGroups, group: group, from: route.from || null,
       draft: draft, setDraft: setDraft, lastSaved: lastSaved, chat: chat, setChat: setChat,
       startNew: function () { resetChat(); setDraft(newDraft({ group: group, me: me })); go('edit'); },
@@ -2151,14 +2031,9 @@
 
     var view;
     var tab = null; // which tab of the bottom bar this screen is, if any
-    if (!anyone && data.canWrite === false) {
-      view = html`<${Head} title="Tab" /><p class="empty">${t('ro.empty')}</p>`;
-    } else if (!anyone) {
-      view = html`<${Setup} ...${c} />`;
-    } else if (!me) {
-      view = data.isOwner === null
-        ? html`<p class="boot">${t('app.loading')}</p>`
-        : html`<${WhoAmI} ...${c} />`;
+    if (!me) {
+      // A new account's profile is being made.
+      view = html`<p class="boot">${t('app.loading')}</p>`;
     } else if (inGroup && !group) {
       view = html`<${Home} ...${c} />`;
       tab = 'home';
@@ -2176,6 +2051,8 @@
       view = html`<${NewGroup} ...${c} />`;
     } else if (route.name === 'chat') {
       view = html`<${Chat} ...${c} />`;
+    } else if (route.name === 'addFriend') {
+      view = html`<${AddFriend} ...${c} />`;
     } else if (route.name === 'invite') {
       view = html`<${Invite} ...${c} />`;
     } else if (route.name === 'edit' && draft) {
