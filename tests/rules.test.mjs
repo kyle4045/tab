@@ -205,6 +205,27 @@ test('settings and member records are private to their owner', async () => {
   await assertFails(as('sean').doc('members/kyle').get());
 });
 
+test('private messages: only the two friends read and send them', async () => {
+  const kyle = as('kyle');
+  const sean = as('sean');
+  const msg = (personId, text = 'hi') => ({ personId, text, at: 1 });
+  await assertSucceeds(kyle.doc('dms/kyle_sean/messages/m1').set(msg('kyle')));
+  await assertSucceeds(sean.collection('dms/kyle_sean/messages').get());
+  await assertSucceeds(sean.doc('dms/kyle_sean/messages/m2').set(msg('sean')));
+  // Not as someone else, not too long, nothing extra.
+  await assertFails(sean.doc('dms/kyle_sean/messages/m3').set(msg('kyle')));
+  await assertFails(kyle.doc('dms/kyle_sean/messages/m4').set(msg('kyle', 'x'.repeat(1001))));
+  await assertFails(kyle.doc('dms/kyle_sean/messages/m5').set(Object.assign(msg('kyle'), { extra: 1 })));
+  // A third person can neither read nor write; the pair must be in order.
+  await assertFails(as('dana').collection('dms/kyle_sean/messages').get());
+  await assertFails(as('dana').doc('dms/dana_kyle/messages/m6').set(msg('dana')));
+  await assertFails(kyle.doc('dms/sean_kyle/messages/m7').set(msg('kyle')));
+  // After unfriending, the history stays readable but no more can be sent.
+  await env.withSecurityRulesDisabled((ctx) => ctx.firestore().doc('friends/kyle_sean').delete());
+  await assertSucceeds(kyle.collection('dms/kyle_sean/messages').get());
+  await assertFails(kyle.doc('dms/kyle_sean/messages/m8').set(msg('kyle')));
+});
+
 test('photos: circle members read them, uploaders delete their own', async () => {
   const kyle = as('kyle');
   await assertSucceeds(kyle.doc('photos/ph1').set({ uid: 'kyle', data: 'data:image/jpeg;base64,AAAA' }));

@@ -168,6 +168,32 @@ try {
   check(await seen(kyle, 'Hi from Dana', 15000), "Kyle gets Dana's reply");
   await shot(dana, '06-chat');
 
+  // 7b. Reminders and the plan go inside Tab: Kyle reminds Dana privately and
+  // sends the plan to the group chat; Dana answers in their private chat.
+  await openGroup(kyle, 'Hotpot');
+  await kyle.getByRole('button', { name: /Settle up/ }).first().click();
+  await button(kyle, 'Remind').click();
+  await shot(kyle, '06a-remind');
+  check(await kyle.getByRole('button', { name: 'Send in LINE' }).count() > 0, 'LINE is still offered for a reminder');
+  await button(kyle, 'Send to dana privately').click();
+  check(await seen(kyle, 'Sent to dana.'), 'Kyle sends Dana a private reminder');
+  await button(kyle, 'Send the plan to the group chat').click();
+  check(await seen(kyle, 'Sent to the group chat.'), 'Kyle sends the plan to the group chat');
+  await tab(dana, 'Friends');
+  check(await seen(dana, 'please pay kyle', 15000), "Dana's Friends list shows Kyle's reminder");
+  check(/1 new message/.test(await dana.locator('nav.tabbar').innerText()), 'the Friends tab shows 1 new message');
+  await shot(dana, '06b-friends');
+  await dana.getByRole('button', { name: /^kyle/ }).first().click();
+  check(await seen(dana, 'dana, please pay kyle NT$250'), 'the reminder is in their private chat');
+  await dana.getByPlaceholder('Message kyle').fill('Paying now');
+  await dana.keyboard.press('Enter');
+  await tab(kyle, 'Friends');
+  check(await seen(kyle, 'Paying now', 15000), "Kyle gets Dana's private reply");
+  await shot(dana, '06c-private-chat');
+  await openGroup(dana, 'Hotpot');
+  await dana.getByRole('button', { name: /Open group chat/ }).click();
+  check(await seen(dana, 'dana → kyle NT$250', 15000), 'the plan is in the group chat');
+
   // 8. Dana pays; Kyle's Settle shows it.
   await tab(dana, 'Settle');
   await dana.locator('main .row.tap').first().click();

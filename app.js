@@ -1219,7 +1219,7 @@
       </div>
 
       <div class="stack">
-        <button class="btn" onClick=${function () { c.line(billText(bill, sh, c.byId)); }}><${Icon} name="send" />${t('bill.copy')}</button>
+        <button class=${c.data.guest ? 'btn' : 'btn ghost'} onClick=${function () { c.line(billText(bill, sh, c.byId)); }}><${Icon} name="send" />${t('bill.copy')}</button>
         ${!confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}><${Icon} name="trash" size=${18} />${t('bill.delete')}</button>`}
         ${confirming && html`<${Confirm} text=${t('bill.deleteAsk')} label=${t('common.delete')}
           onCancel=${function () { setConfirming(false); }}
@@ -1230,6 +1230,8 @@
   // ---------- settle up ----------
 
   function Settle(c) {
+    var ak = useState(null), asking = ak[0], setAsking = ak[1]; // the payment a reminder is being sent for
+    var inApp = !c.data.guest; // guests have no chat: LINE is their only way
     var plan = Calc.settle(c.group.net);
     var recent = c.group.payments.slice().sort(function (x, y) { return (y.createdAt || 0) - (x.createdAt || 0); }).slice(0, 5);
     var group = c.group.name;
@@ -1241,6 +1243,17 @@
       if (from.example || to.example) doc.example = true;
       store.put('payments', store.newId(), doc).catch(function () { c.say(t('app.saveFailed')); });
       c.say(t('settle.marked'));
+    }
+    function reminder(p) {
+      return t('settle.reminder', { from: nameOf(c.byId[p.fromId]), to: nameOf(c.byId[p.toId]), amount: money(p.amount) });
+    }
+    function toGroup(text) {
+      store.sendMessage(c.group.id, c.me.id, text).catch(function () { c.say(t('chat.failed')); });
+      c.say(t('share.sentGroup'));
+    }
+    function toFriend(uid, text) {
+      store.sendDm(uid, text).catch(function () { c.say(t('chat.failed')); });
+      c.say(t('share.sentFriend', { name: nameOf(c.byId[uid]) }));
     }
     function planText() {
       return [group + ' · ' + t('settle.title')].concat(plan.map(function (p) {
@@ -1273,7 +1286,7 @@
               <span class=${'amt ' + (p.toId === c.me.id ? 'owed' : p.fromId === c.me.id ? 'owes' : '')}>${money(p.amount)}</span>
             </div>
             <div class="pay-actions">
-              <button class="btn small ghost" onClick=${function () { c.line(t('settle.reminder', { from: nameOf(from), to: nameOf(to), amount: money(p.amount) })); }}>${t('settle.copyReminder')}</button>
+              ${p.fromId !== c.me.id && html`<button class="btn small ghost" onClick=${function () { if (inApp) setAsking(p); else c.line(reminder(p)); }}>${inApp ? t('settle.remind') : t('settle.copyReminder')}</button>`}
               <button class="btn small secondary" onClick=${function () { markPaid(p); }}>${t('settle.markPaid')}</button>
             </div>
           </div>`;
@@ -1296,40 +1309,29 @@
         </div>
       </section>`}
 
-      ${plan.length > 0 && html`<button class="btn" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>`}`;
+      ${plan.length > 0 && inApp && html`<div class="stack">
+        <button class="btn" onClick=${function () { toGroup(planText()); }}><${Icon} name="chat" />${t('settle.planToGroup')}</button>
+        <button class="btn ghost" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>
+      </div>`}
+      ${plan.length > 0 && !inApp && html`<button class="btn" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>`}
+
+      ${asking && html`<div class="sheet" role="dialog" aria-label=${t('settle.remindTitle', { name: nameOf(c.byId[asking.fromId]) })}>
+        <div class="sheet-card">
+          <h2 class="eyebrow">${t('settle.remindTitle', { name: nameOf(c.byId[asking.fromId]) })}</h2>
+          <p class="muted">${reminder(asking)}</p>
+          <button class="btn" onClick=${function () { toGroup(reminder(asking)); setAsking(null); }}><${Icon} name="chat" />${t('share.toGroup')}</button>
+          ${c.data.friends.indexOf(asking.fromId) !== -1 && html`<button class="btn secondary" onClick=${function () { toFriend(asking.fromId, reminder(asking)); setAsking(null); }}><${Icon} name="user" />${t('share.toFriend', { name: nameOf(c.byId[asking.fromId]) })}</button>`}
+          <button class="btn ghost" onClick=${function () { c.line(reminder(asking)); setAsking(null); }}><${Icon} name="send" />${t('bill.copy')}</button>
+          <button class="btn ghost" onClick=${function () { setAsking(null); }}>${t('common.cancel')}</button>
+        </div>
+      </div>`}`;
   }
 
   // ---------- group chat ----------
 
-  function Chat(c) {
-    var g = c.group;
-    var tx = useState(''), text = tx[0], setText = tx[1];
-    var endRef = useRef(null);
-    var messages = g.messages;
-
-    // The group's ten most recent bills show up in the conversation as cards,
-    // placed by when they were added.
-    var bills = g.bills
-      .filter(function (b) { return b.createdAt; })
-      .sort(function (x, y) { return x.createdAt - y.createdAt; })
-      .slice(-10);
-    var timeline = messages.map(function (m) { return { at: m.at || 0, key: 'm' + m.id, message: m }; })
-      .concat(bills.map(function (b) { return { at: b.createdAt, key: 'b' + b.id, bill: b }; }))
-      .sort(function (x, y) { return x.at - y.at; });
-
-    useEffect(function () {
-      store.markChatRead(g.id);
-      if (timeline.length && endRef.current) endRef.current.scrollIntoView({ block: 'end' });
-    }, [timeline.length]);
-
-    function send(ev) {
-      ev.preventDefault();
-      var msg = text.trim();
-      if (!msg) return;
-      setText('');
-      store.sendMessage(g.id, c.me.id, msg).catch(function () { c.say(t('chat.failed')); });
-    }
-
+  // A conversation's rows, oldest first, with a date line where the day
+  // changes. names: show who wrote each message (groups; not a two-person chat).
+  function chatRows(c, timeline, names) {
     var rows = [];
     var lastDay = '';
     timeline.forEach(function (entry) {
@@ -1356,25 +1358,91 @@
       rows.push(html`<div class="msg" key=${entry.key}>
         <${Avatar} person=${person} size=${32} />
         <div class="msg-body">
-          <span class="msg-name">${nameOf(person)}</span>
+          ${names && html`<span class="msg-name">${nameOf(person)}</span>`}
           <div class="bubble ai"><p>${m.text}</p></div>
         </div>
       </div>`);
     });
+    return rows;
+  }
+
+  // The message box at the bottom of a conversation.
+  function Composer(p) {
+    var tx = useState(''), text = tx[0], setText = tx[1];
+    function send(ev) {
+      ev.preventDefault();
+      var msg = text.trim();
+      if (!msg) return;
+      setText('');
+      p.onSend(msg);
+    }
+    return html`<form class="composer cta" onSubmit=${send}>
+      <input id="chat-message" class="field" aria-label=${p.placeholder} placeholder=${p.placeholder} value=${text} autocomplete="off" maxlength="1000" onInput=${function (e) { setText(e.target.value); }} />
+      <button type="submit" class="icon-btn send" aria-label=${t('ai.send')} disabled=${!text.trim()}><${Icon} name="send" weight=${2.2} /></button>
+    </form>`;
+  }
+
+  function Chat(c) {
+    var g = c.group;
+    var endRef = useRef(null);
+    var messages = g.messages;
+
+    // The group's ten most recent bills show up in the conversation as cards,
+    // placed by when they were added.
+    var bills = g.bills
+      .filter(function (b) { return b.createdAt; })
+      .sort(function (x, y) { return x.createdAt - y.createdAt; })
+      .slice(-10);
+    var timeline = messages.map(function (m) { return { at: m.at || 0, key: 'm' + m.id, message: m }; })
+      .concat(bills.map(function (b) { return { at: b.createdAt, key: 'b' + b.id, bill: b }; }))
+      .sort(function (x, y) { return x.at - y.at; });
+
+    useEffect(function () {
+      store.markChatRead(g.id);
+      if (timeline.length && endRef.current) endRef.current.scrollIntoView({ block: 'end' });
+    }, [timeline.length]);
 
     return html`
       <${Head} onBack=${function () { c.go('group'); }} title=${g.name} sub=${plural('groups.members', g.members.length)} />
 
       <section class="chat grow">
         ${timeline.length === 0 && html`<p class="empty">${t('chat.empty')}</p>`}
-        ${rows}
+        ${chatRows(c, timeline, true)}
         <div ref=${endRef}></div>
       </section>
 
-      <form class="composer cta" onSubmit=${send}>
-        <input id="chat-message" class="field" aria-label=${t('chat.placeholder')} placeholder=${t('chat.placeholder')} value=${text} autocomplete="off" maxlength="1000" onInput=${function (e) { setText(e.target.value); }} />
-        <button type="submit" class="icon-btn send" aria-label=${t('ai.send')} disabled=${!text.trim()}><${Icon} name="send" weight=${2.2} /></button>
-      </form>`;
+      <${Composer} placeholder=${t('chat.placeholder')} onSend=${function (msg) {
+        store.sendMessage(g.id, c.me.id, msg).catch(function () { c.say(t('chat.failed')); });
+      }} />`;
+  }
+
+  // A private conversation with one friend. Once they are no longer friends the
+  // history stays, but nothing more can be sent.
+  function Dm(c) {
+    var p = c.person;
+    var endRef = useRef(null);
+    var friend = c.data.friends.indexOf(p.id) !== -1;
+    var timeline = (c.data.dms[p.id] || []).map(function (m) { return { at: m.at || 0, key: 'm' + m.id, message: m }; });
+
+    useEffect(function () {
+      store.markChatRead('dm:' + p.id);
+      if (timeline.length && endRef.current) endRef.current.scrollIntoView({ block: 'end' });
+    }, [timeline.length]);
+
+    return html`
+      <${Head} onBack=${function () { c.go('people'); }} title=${p.name}
+        right=${html`<button class="icon-btn bare" aria-label=${t('dm.profile', { name: p.name })} onClick=${function () { c.go('person', p.id, undefined, 'dm'); }}><${Avatar} person=${p} size=${40} /></button>`} />
+
+      <section class="chat grow">
+        ${timeline.length === 0 && html`<p class="empty">${t('dm.empty', { name: p.name })}</p>`}
+        ${chatRows(c, timeline, false)}
+        <div ref=${endRef}></div>
+      </section>
+
+      ${friend && html`<${Composer} placeholder=${t('dm.placeholder', { name: p.name })} onSend=${function (msg) {
+        store.sendDm(p.id, msg).catch(function () { c.say(t('chat.failed')); });
+      }} />`}
+      ${!friend && html`<p class="muted small">${t('dm.notFriends', { name: p.name })}</p>`}`;
   }
 
   // ---------- groups ----------
@@ -1674,13 +1742,20 @@
       <section class="section">
         ${c.friends.length === 0 && html`<p class="empty">${t('friends.none')}</p>`}
         <div class="list">
-          ${c.friends.map(function (p) {
+          ${c.friends.slice().sort(function (x, y) { return y.dm.lastAt - x.dm.lastAt; }).map(function (p) {
             var n = groupCount(p);
-            return html`<button class="row tap" key=${p.id} onClick=${function () { c.go('person', p.id); }}>
-              <${Avatar} person=${p} size=${40} />
-              <span class="row-main row-title">${p.name}</span>
-              <span class="hint">${n ? plural('people.inGroups', n) : t('people.noGroup')}</span>
-              <${Icon} name="arrow" size=${16} />
+            return html`<button class="row tap" key=${p.id} onClick=${function () { c.go('dm', p.id); }}>
+              <${Avatar} person=${p} size=${44} />
+              <span class="row-main">
+                <span class="line">
+                  <span class="row-title clip">${p.name}</span>
+                  ${p.dm.lastAt > 0 && html`<span class="hint">${when(p.dm.lastAt)}</span>`}
+                </span>
+                <span class="line">
+                  <span class="row-sub clip">${p.dm.lastLine || (n ? plural('people.inGroups', n) : t('people.noGroup'))}</span>
+                  <${Badge} n=${p.dm.unread} />
+                </span>
+              </span>
             </button>`;
           })}
         </div>
@@ -1859,7 +1934,7 @@
     return html`<nav class="tabbar" aria-label=${t('tabs.label')}>
       ${TABS.map(function (tab) {
         var on = p.current === tab.name;
-        var n = tab.name === 'home' ? p.unread : 0;
+        var n = tab.name === 'home' ? p.unread : tab.name === 'people' ? p.dmUnread : 0;
         return html`<button key=${tab.name} class=${'tab' + (on ? ' on' : '')} aria-current=${on ? 'page' : null} onClick=${function () { p.go(tab.name, null, null); }}>
           <span class="tab-icon">
             <${Icon} name=${tab.icon} size=${24} weight=${1.8} />
@@ -2018,16 +2093,21 @@
     var shared = c.groups.filter(function (g) { return g.memberIds.indexOf(p.id) !== -1; });
     function unfriend() {
       store.removeFriend(p.id).catch(function () { c.say(t('app.saveFailed')); });
-      c.go(c.from || 'people');
+      c.go('people');
+    }
+    function back() {
+      if (c.from === 'dm') c.go('dm', p.id);
+      else c.go(c.from || 'people');
     }
     return html`
-      <${Head} onBack=${function () { c.go(c.from || 'people'); }} title=${t('person.title')} />
+      <${Head} onBack=${back} title=${t('person.title')} />
       <section class="section center">
         <${Avatar} person=${p} size=${112} />
         <p class="lead-title">${p.name}</p>
         <p class="muted">${shared.length ? shared.map(function (g) { return g.name; }).join(' · ') : t('people.noGroup')}</p>
       </section>
       <div class="stack grow-top">
+        ${friend && html`<button class="btn" onClick=${function () { c.go('dm', p.id); }}><${Icon} name="chat" />${t('dm.open')}</button>`}
         ${friend && !confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}>${t('friends.remove')}</button>`}
         ${confirming && html`<${Confirm} text=${t('friends.removeAsk', { name: p.name })} label=${t('common.remove')}
           onCancel=${function () { setConfirming(false); }} onConfirm=${unfriend} />`}
@@ -2099,7 +2179,18 @@
     var byId = {};
     people.forEach(function (p) { byId[p.id] = p; });
     var me = meId ? byId[meId] : null;
-    var friends = people.filter(function (p) { return data.friends.indexOf(p.id) !== -1; });
+    // Each friend with their private conversation: its last line and unread count.
+    function dmView(p) {
+      var messages = data.dms[p.id] || [];
+      var last = messages[messages.length - 1];
+      return {
+        lastAt: last ? last.at || 0 : 0,
+        lastLine: !last ? '' : me && last.personId === me.id ? t('groups.you', { text: last.text }) : last.text,
+        unread: me ? messages.filter(function (m) { return m.at > (data.chatRead['dm:' + p.id] || 0) && m.personId !== me.id; }).length : 0
+      };
+    }
+    var friends = people.filter(function (p) { return data.friends.indexOf(p.id) !== -1; })
+      .map(function (p) { return Object.assign({}, p, { dm: dmView(p) }); });
 
     // Each group with what the screens need: its people, bills, chat and sums.
     function groupView(g) {
@@ -2204,6 +2295,8 @@
       view = html`<${NewGroup} ...${c} />`;
     } else if (route.name === 'chat') {
       view = html`<${Chat} ...${c} />`;
+    } else if (route.name === 'dm' && byId[route.id]) {
+      view = html`<${Dm} key=${route.id} ...${c} person=${byId[route.id]} />`;
     } else if (route.name === 'addFriend') {
       view = html`<${AddFriend} ...${c} />`;
     } else if (route.name === 'invite') {
@@ -2228,6 +2321,7 @@
       tab = 'home';
     }
     var unread = groups.reduce(function (n, g) { return n + g.unread; }, 0);
+    var dmUnread = friends.reduce(function (n, p) { return n + p.dm.unread; }, 0);
 
     return html`<main class=${'app' + (tab ? ' with-tabs' : '')}>
       ${!data.persistent && html`<p class="banner warn" role="status">${t('app.notSaved')}</p>`}
@@ -2237,7 +2331,7 @@
         <button class="link" onClick=${function () { go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
       </div>`}
       ${view}
-      ${tab && html`<${TabBar} current=${tab} unread=${unread} go=${go} />`}
+      ${tab && html`<${TabBar} current=${tab} unread=${unread} dmUnread=${dmUnread} go=${go} />`}
       <div class="toast-wrap" aria-live="polite">${toast && html`<div class="toast">${toast}</div>`}</div>
       ${copyText && html`<div class="sheet" role="dialog" aria-label=${t('copy.manual')}>
         <div class="sheet-card">

@@ -147,6 +147,21 @@ service cloud.firestore {
       allow delete: if signedIn() && me() in resource.data.uids;
     }
 
+    // Private messages between two friends: dms/{a_b}/messages, a < b. Only the
+    // two of them read it; either may send while they are friends, as themself.
+    // Either may delete (the oldest are pruned past 200, like group chat).
+    match /dms/{pair}/messages/{id} {
+      function uids() { return pair.split('_'); }
+      function mine() { return signedIn() && uids().size() == 2 && me() in uids(); }
+      allow read, delete: if mine();
+      allow create: if mine()
+        && uids()[0] < uids()[1]
+        && friendsWith(uids()[0] == me() ? uids()[1] : uids()[0])
+        && request.resource.data.keys().hasOnly(['personId', 'text', 'at'])
+        && request.resource.data.personId == me()
+        && request.resource.data.text is string && request.resource.data.text.size() <= 1000;
+    }
+
     match /invites/{code} {
       allow get: if signedIn();
       allow list: if signedIn() && resource.data.uid == me();

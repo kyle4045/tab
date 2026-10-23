@@ -84,6 +84,7 @@
     groupInvites: {}, // groupId -> that group's open invitations
     chatRead: readMarks(),
     chats: {}, // groupId -> that group's messages, oldest first
+    dms: {}, // friend's uid -> the private messages with them, oldest first
     photos: {}, // photo id -> data URL
     canUpload: false,
     canAsk: false,
@@ -104,6 +105,7 @@
   var parts = { bills: {}, payments: {} }; // name -> groupId -> rows
   var partStops = {}; // 'bills/groupId' -> stop
   var chatStops = {};
+  var dmStops = {}; // friend's uid -> stop
   var uploaded = {}; // photos uploaded from this device, shown before the database echoes them back
 
   function emit() {
@@ -173,6 +175,39 @@
       retry(key, function () { watchPart(name, groupId); }, e);
     });
   }
+  // A private conversation with a friend: dms/{a_b}/messages, the two uids in order.
+  function dmPath(uid) {
+    var a = me();
+    return 'dms/' + (a < uid ? a + '_' + uid : uid + '_' + a) + '/messages';
+  }
+  function watchDm(uid) {
+    if (dmStops[uid]) return;
+    var key = 'dm/' + uid;
+    dmStops[uid] = db.collection(dmPath(uid)).orderBy('at', 'desc').limit(CHAT_KEEP).onSnapshot(function (snap) {
+      retries[key] = 0;
+      state.dms = Object.assign({}, state.dms);
+      state.dms[uid] = rows(snap).reverse();
+      emit();
+    }, function (e) {
+      delete dmStops[uid];
+      if (config.emulator) console.warn('feed failed', key, e && e.code);
+      var n = (retries[key] || 0) + 1;
+      retries[key] = n;
+      if (n <= 5) setTimeout(function () { if (db && state.friends.indexOf(uid) !== -1) watchDm(uid); }, 1000 * n);
+    });
+  }
+  // One conversation per friend, opened as friends appear and closed as they go.
+  function syncDms() {
+    state.friends.forEach(watchDm);
+    Object.keys(dmStops).forEach(function (uid) {
+      if (state.friends.indexOf(uid) !== -1) return;
+      dmStops[uid]();
+      delete dmStops[uid];
+      state.dms = Object.assign({}, state.dms);
+      delete state.dms[uid];
+    });
+  }
+
   // Who has been invited to a group and hasn't answered yet.
   var inviteStops = {};
   function watchInvites(groupId) {
@@ -227,9 +262,11 @@
     stops.forEach(function (stop) { stop(); });
     stops = [];
     Object.keys(chatStops).forEach(function (id) { chatStops[id](); });
+    Object.keys(dmStops).forEach(function (uid) { dmStops[uid](); });
     Object.keys(partStops).forEach(function (key) { partStops[key](); });
     Object.keys(inviteStops).forEach(function (id) { inviteStops[id](); });
     chatStops = {};
+    dmStops = {};
     partStops = {};
     inviteStops = {};
     parts = { bills: {}, payments: {} };
@@ -238,7 +275,7 @@
     sample = null;
     Object.assign(state, {
       ready: false, persistent: false, guest: false, user: null, inCircle: null, meId: null, friendCode: null,
-      chats: {}, photos: {}, people: [], bills: [], payments: [], groups: [],
+      chats: {}, dms: {}, photos: {}, people: [], bills: [], payments: [], groups: [],
       friends: [], requestsIn: [], requestsOut: [], invitations: [], groupInvites: {},
       canUpload: false, canAsk: false, canScan: false, settings: localSettings()
     });
@@ -281,6 +318,7 @@
         var uids = doc.data().uids || [];
         return uids[0] === uid ? uids[1] : uids[0];
       });
+      syncDms();
       emit();
     }, noop));
     stops.push(db.collection('friendRequests').where('to', '==', uid).onSnapshot(function (snap) {
@@ -623,6 +661,18 @@
     });
   }
 
+  // A private message to a friend, kept to the newest 200 like group chat.
+  function sendDm(uid, text) {
+    var doc = { personId: me(), text: String(text).slice(0, 1000), at: Date.now() };
+    var list = state.dms[uid] || [];
+    var oldest = list.length >= CHAT_KEEP ? list[0] : null;
+    var col = db.collection(dmPath(uid));
+    return col.doc(newId()).set(doc).then(function () {
+      if (oldest) return col.doc(oldest.id).delete().catch(noop);
+      return undefined;
+    });
+  }
+
   // A group goes with everything in it: bills, payments, chat and open
   // invitations. They go first, while the group still says who may delete them.
   function removeGroup(groupId) {
@@ -937,6 +987,7 @@
     groupOf: groupOf,
     markChatRead: markChatRead,
     sendMessage: sendMessage,
+    sendDm: sendDm,
     removeGroup: removeGroup,
     askAssistant: askAssistant,
     start: start,
