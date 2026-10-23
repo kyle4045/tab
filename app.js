@@ -17,7 +17,8 @@
     return location.origin + location.pathname + '?openExternalBrowser=1#join=' + code;
   }
 
-  var COLORS = ['#FACA82', '#8CC8FF', '#FF9E7A', '#C9B6FF', '#7FD9B4', '#FF9EC0', '#E8D95A', '#8FD8E8'];
+  // Sticker colours: the only colour in the app, on people and groups.
+  var COLORS = ['#FFD23F', '#8CC8FF', '#FF8A5B', '#B9A6FF', '#7AD3B5', '#FF9EC0', '#C6E36B', '#FFB86B'];
   var ICONS = {
     back: 'M19 12H5M11 6l-6 6 6 6',
     arrow: 'M5 12h14M13 6l6 6-6 6',
@@ -33,8 +34,21 @@
     send: 'M12 19V5M6 11l6-6 6 6',
     users: 'M3 19v-1a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v1M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM17 14a4 4 0 0 1 4 4v1M15 4.2a3.5 3.5 0 0 1 0 6.6',
     swap: 'M4 8h15l-4-4M20 16H5l4 4',
-    user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20.5a7 7 0 0 1 14 0'
+    user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20.5a7 7 0 0 1 14 0',
+    chevron: 'M9 6l6 6-6 6',
+    // group icons
+    bowl: 'M3 11h18a9 9 0 0 1-18 0zM8 7.5c0-1.5 1-1.5 1-3M12 7.5c0-1.5 1-1.5 1-3M16 7.5c0-1.5 1-1.5 1-3',
+    boba: 'M6 8h12l-1.6 13H7.6zM5 8h14M12 8l2.5-5M9.5 15.5h.01M12 17.5h.01M14.5 15.5h.01',
+    beer: 'M5 6h10v14H5zM15 9h2.5a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5H15M8.5 10v6M11.5 10v6',
+    mic: 'M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6',
+    mountain: 'M2.5 19.5l6.5-11 4.5 7 2.5-3.5 5.5 7.5z',
+    plane: 'M21 3L3 10.5l7 2.5 2.5 7zM10 13l5-5',
+    home: 'M4 11l8-7 8 7M6 9.5V20h12V9.5M10 20v-5h4v5',
+    cake: 'M4 20h16v-8H4zM4 15.5c2 1.5 4 1.5 6 0s4-1.5 6 0 3 1.5 4 0M12 12V8.5M12 6a1 1 0 0 1-1-1c0-1 1-2.5 1-2.5s1 1.5 1 2.5a1 1 0 0 1-1 1z',
+    heart: 'M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z',
+    bag: 'M5 8h14l-1.2 12H6.2zM9 8V6.5a3 3 0 0 1 6 0V8'
   };
+  var GROUP_ICONS = ['bowl', 'boba', 'beer', 'mic', 'mountain', 'plane', 'home', 'cake', 'heart', 'bag'];
 
   // ---------- small helpers ----------
 
@@ -63,6 +77,11 @@
     return /[㐀-鿿]/.test(name) ? chars[chars.length - 1] : chars[0].toUpperCase();
   }
   function nameOf(person) { return person && person.name ? person.name : t('person.unknown'); }
+  // On screen the viewer is "You" rather than their own name ("Me" as a guest).
+  // Text sent to LINE keeps real names. obj: "you" in the middle of a sentence.
+  function whoName(c, id, obj) {
+    return id === c.me.id ? t(obj ? 'people.youObj' : 'people.you') : nameOf(c.byId[id]);
+  }
   function sortBills(bills) {
     return bills.slice().sort(function (a, b) {
       if (a.date !== b.date) return a.date < b.date ? 1 : -1;
@@ -170,7 +189,7 @@
 
   // The screens work on copies of a group with extra working fields; only
   // these are stored.
-  var GROUP_FIELDS = ['name', 'ownerId', 'memberIds', 'preset', 'createdAt', 'example'];
+  var GROUP_FIELDS = ['name', 'ownerId', 'memberIds', 'preset', 'icon', 'createdAt', 'example'];
   function saveGroup(group, patch) {
     var doc = {};
     GROUP_FIELDS.forEach(function (k) { if (group[k] !== undefined) doc[k] = group[k]; });
@@ -199,12 +218,45 @@
     return html`<span class="avatar" style=${box + ';background:' + COLORS[preset % COLORS.length]} aria-hidden="true">${initialOf(person.name)}</span>`;
   }
 
+  function groupColor(group) { return COLORS[((group && group.preset) || 0) % COLORS.length]; }
+  function groupIcon(group) { return group && GROUP_ICONS.indexOf(group.icon) !== -1 ? group.icon : null; }
+
+  // A group's sticker: its icon, or the first letter of its name until it has one.
+  function GroupMark(p) {
+    var icon = groupIcon(p.group);
+    return icon ? html`<${Icon} name=${icon} size=${p.size} weight=${1.8} />` : html`<span class="group-letter" aria-hidden="true">${initialOf(p.group.name)}</span>`;
+  }
+
   function GroupAvatar(p) {
     var group = p.group || {};
     var size = p.size || 44;
-    var box = 'width:' + size + 'px;height:' + size + 'px;font-size:' + Math.round(size * 0.42) + 'px;background:' +
-      COLORS[(group.preset || 0) % COLORS.length];
-    return html`<span class="avatar group" style=${box} aria-hidden="true">${initialOf(group.name)}</span>`;
+    var box = 'width:' + size + 'px;height:' + size + 'px;font-size:' + Math.round(size * 0.42) + 'px;background:' + groupColor(group);
+    return html`<span class="avatar group" style=${box} aria-hidden="true"><${GroupMark} group=${group} size=${Math.round(size * 0.55)} /></span>`;
+  }
+
+  // Picks the icon on a group's sticker; tapping the chosen one again clears it.
+  function IconPicker(p) {
+    return html`<div class="icon-pick" role="group" aria-label=${t('groupIcon.label')}>
+      ${GROUP_ICONS.map(function (name) {
+        var on = p.value === name;
+        return html`<button type="button" key=${name} class=${'icon-choice' + (on ? ' on' : '')} style=${on ? 'background:' + p.color : ''}
+          aria-label=${t('groupIcon.' + name)} aria-pressed=${on ? 'true' : 'false'} onClick=${function () { p.onPick(on ? null : name); }}><${Icon} name=${name} size=${24} weight=${1.8} /></button>`;
+      })}
+    </div>`;
+  }
+
+  // A few tilted group stickers, for the sign-in and empty screens.
+  function Stickers() {
+    return html`<div class="stickers" aria-hidden="true">
+      ${[['bowl', 2], ['boba', 5], ['mic', 3], ['mountain', 4]].map(function (s) {
+        return html`<span key=${s[0]} class="sticker" style=${'background:' + COLORS[s[1]]}><${Icon} name=${s[0]} size=${32} weight=${1.8} /></span>`;
+      })}
+    </div>`;
+  }
+
+  // A headline amount: a small "NT$" before a big number.
+  function BigMoney(p) {
+    return html`<span class="cur-sym">NT$</span>${Math.round(Math.abs(p.n)).toLocaleString('en-US')}`;
   }
 
   function reducedMotion() {
@@ -318,6 +370,7 @@
 
     return html`
       <${Head} title="Tab" right=${html`<${LangButton} lang=${p.lang} />`} />
+      <${Stickers} />
       <section class="section">
         <p class="lead-title">${p.data.adding ? t('signin.addTitle') : p.data.joining ? t('signin.joinTitle') : t('signin.title')}</p>
         <p class="muted">${p.data.adding ? t('signin.addLead') : p.data.joining ? t('signin.joinLead') : t('signin.lead')}</p>
@@ -424,36 +477,32 @@
 
       ${c.groups.some(function (g) { return g.bills.length; }) && html`<button type="button" class=${'card hero live' + (pressed ? ' pressed' : '')} onClick=${openSettle}>
         <span class="muted">${mine > 0 ? t('home.owed') : mine < 0 ? t('home.owe') : t('home.square')}</span>
-        <span class="big">${money(shown)}</span>
+        <span class="big"><${BigMoney} n=${shown} /></span>
         <span class="muted">${plural('groups.across', c.groups.length)}</span>
         <span class="hero-go" aria-hidden="true"><${Icon} name="arrow" size=${20} /></span>
         <span class="visually-hidden">${t('home.openSettle')}</span>
       </button>`}
 
       <section class="section grow">
-        <h2 class="eyebrow">${t('groups.eyebrow')}</h2>
-        ${c.groups.length === 0 && html`<p class="empty">${t('groups.none')}</p>`}
-        ${c.groups.length === 0 && html`<button class="btn" onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" weight=${2.5} />${t('groups.new')}</button>`}
-        <div class="list">
+        ${c.groups.length === 0 && html`<div class="empty-state">
+          <${Stickers} />
+          <h2 class="display">${t('groups.emptyTitle')}</h2>
+          <p class="muted">${t('groups.none')}</p>
+          <button class="btn" onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" weight=${2.5} />${t('groups.new')}</button>
+        </div>`}
+        ${c.groups.length > 0 && html`<div class="tiles">
           ${c.groups.map(function (g) {
             var v = Math.round(g.net[c.me.id] || 0);
-            return html`<button class="row tap" key=${g.id} onClick=${function () { c.go('group', null, g.id); }}>
-              <${GroupAvatar} group=${g} size=${48} />
-              <span class="row-main">
-                <span class="line">
-                  <span class="row-title clip">${g.name}</span>
-                  ${v !== 0 && html`<span class=${'amt ' + (v > 0 ? 'owed' : 'owes')}>${signed(v)}</span>`}
-                  ${v === 0 && g.bills.length > 0 && html`<span class="hint">${t('home.even')}</span>`}
-                </span>
-                <span class="line">
-                  <span class="row-sub clip">${g.lastLine || plural('groups.members', g.members.length)}</span>
-                  ${g.lastMessageAt > 0 && html`<span class="hint">${when(g.lastMessageAt)}</span>`}
-                  <${Badge} n=${g.unread} />
-                </span>
-              </span>
+            return html`<button class="tile" key=${g.id} style=${'background:' + groupColor(g)} onClick=${function () { c.go('group', null, g.id); }}>
+              <span class="tile-top"><${GroupMark} group=${g} size=${30} /><${Badge} n=${g.unread} /></span>
+              <span class="tile-name">${g.name}</span>
+              ${v !== 0 && html`<span class="tile-amt">${signed(v)}</span>`}
+              ${v === 0 && g.bills.length > 0 && html`<span class="tile-amt">${t('home.even')}</span>`}
+              <span class="tile-sub">${g.lastLine || plural('groups.members', g.members.length)}${g.lastMessageAt > 0 ? ' · ' + when(g.lastMessageAt) : ''}</span>
             </button>`;
           })}
-        </div>
+          <button class="tile add" onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" size=${24} weight=${2} /><span>${t('groups.new')}</span></button>
+        </div>`}
       </section>`;
   }
 
@@ -492,7 +541,7 @@
 
       <section class="card hero">
         <p class="muted">${mine > 0 ? t('group.owed') : mine < 0 ? t('group.owe') : t('home.square')}</p>
-        <p class=${'big ' + (mine > 0 ? 'owed' : mine < 0 ? 'owes' : '')}>${money(Math.abs(mine))}</p>
+        <p class=${'big ' + (mine > 0 ? 'owed' : mine < 0 ? 'owes' : '')}><${BigMoney} n=${mine} /></p>
         <p class="muted">${plural('home.across', bills.length)}</p>
         ${plan.length > 0 && html`<button class="link-row" onClick=${function () { c.go('settle'); }}>
           <span>${plural('home.settle', plan.length)}</span><${Icon} name="arrow" size=${18} />
@@ -505,7 +554,7 @@
           ${rows.map(function (r) {
             return html`<div class="row" key=${r.p.id}>
               <${Avatar} person=${r.p} size=${32} />
-              <span class="row-main row-title">${r.p.name}</span>
+              <span class="row-main row-title">${whoName(c, r.p.id)}</span>
               <span class="hint">${r.v > 0 ? t('home.isOwed') : r.v < 0 ? t('home.owes') : t('home.even')}</span>
               <span class=${'amt wide ' + (r.v > 0 ? 'owed' : r.v < 0 ? 'owes' : 'muted')}>${signed(r.v)}</span>
             </div>`;
@@ -523,7 +572,7 @@
             return html`<button class="row tap" key=${bill.id} onClick=${function () { c.go('bill', bill.id); }}>
               <span class="row-main">
                 <span class="row-title">${bill.title}</span>
-                <span class="row-sub">${fmtDate(bill.date)} · ${t('home.paid', { name: nameOf(c.byId[bill.payerId]), amount: money(sh.total) })}</span>
+                <span class="row-sub">${fmtDate(bill.date)} · ${t('home.paid', { name: whoName(c, bill.payerId), amount: money(sh.total) })}</span>
               </span>
               <span class="row-side">
                 <span class="amt">${there ? money(sh.shares[c.me.id] || 0) : '—'}</span>
@@ -1035,7 +1084,7 @@
             <h2 class="eyebrow">${t('ai.soFar')}</h2>
             <span class="amt">${money(sh.total)}</span>
           </div>
-          ${!draft.payerAssumed && html`<p class="muted small">${[t('home.paid', { name: nameOf(c.byId[draft.payerId]), amount: money(sh.total) })].concat(extras).join(' · ')}</p>`}
+          ${!draft.payerAssumed && html`<p class="muted small">${[t('home.paid', { name: whoName(c, draft.payerId), amount: money(sh.total) })].concat(extras).join(' · ')}</p>`}
           ${draft.payerAssumed && extras.length > 0 && html`<p class="muted small">${extras.join(' · ')}</p>`}
           ${draft.payerAssumed && html`<div class="section">
             <p class="warn-text">${t('ai.whoPaid')}</p>
@@ -1118,7 +1167,8 @@
     if (!bill) return html`<${Head} onBack=${function () { c.go('group'); }} title=${t('bill.missing')} />`;
 
     var sh = Calc.billShares(bill);
-    var payerName = nameOf(c.byId[bill.payerId]);
+    var payerName = whoName(c, bill.payerId);
+    var iPaid = bill.payerId === c.me.id;
     var present = bill.presentIds || [];
     var owers = present.filter(function (id) { return id !== bill.payerId; });
     var back = owers.reduce(function (sum, id) { return sum + (sh.shares[id] || 0); }, 0);
@@ -1134,7 +1184,7 @@
       return html`<div class="row top" key=${id}>
         <${Avatar} person=${person} size=${36} />
         <span class="row-main">
-          <span class="row-title">${nameOf(person)}${isPayer && html`<span class="hint"> · ${t('bill.ownShare')}</span>`}</span>
+          <span class="row-title">${whoName(c, id)}${isPayer && html`<span class="hint"> · ${t('bill.ownShare')}</span>`}</span>
           <span class="row-sub wrap">${ate(id)}</span>
         </span>
         <span class=${'amt ' + (isPayer ? 'muted' : 'owes')}>${money(sh.shares[id] || 0)}</span>
@@ -1151,12 +1201,12 @@
 
       <section class="card hero">
         <p class="muted">${t('bill.paidBy', { name: payerName })}</p>
-        <p class="big">${money(sh.total)}</p>
+        <p class="big"><${BigMoney} n=${sh.total} /></p>
         <p class="muted">${[plural('bill.items', (bill.items || []).length)].concat(extras.length ? [t('bill.includes', { list: extras.join(' + ') })] : []).join(' · ')}</p>
       </section>
 
       <section class="section grow">
-        <h2 class="eyebrow">${t('bill.whoOwes', { name: payerName })}</h2>
+        <h2 class="eyebrow">${iPaid ? t('bill.whoOwesYou') : t('bill.whoOwes', { name: payerName })}</h2>
         <div class="list">
           ${owers.map(function (id) { return row(id, false); })}
           ${present.indexOf(bill.payerId) !== -1 && row(bill.payerId, true)}
@@ -1164,7 +1214,7 @@
       </section>
 
       <div class="banner">
-        <span>${t('bill.getsBack', { name: payerName })}</span>
+        <span>${iPaid ? t('bill.youGetBack') : t('bill.getsBack', { name: payerName })}</span>
         <span class="amt owed">${money(back)}</span>
       </div>
 
@@ -1216,10 +1266,10 @@
           return html`<div class="pay" key=${p.fromId + p.toId}>
             <div class="pay-line">
               <${Avatar} person=${from} size=${32} />
-              <span class="row-title">${nameOf(from)}</span>
+              <span class="row-title">${whoName(c, p.fromId)}</span>
               <span class="pay-arrow" role="img" aria-label=${t('settle.pays')}><${Icon} name="arrow" size=${18} /></span>
               <${Avatar} person=${to} size=${32} />
-              <span class="row-title row-main">${nameOf(to)}</span>
+              <span class="row-title row-main">${whoName(c, p.toId)}</span>
               <span class=${'amt ' + (p.toId === c.me.id ? 'owed' : p.fromId === c.me.id ? 'owes' : '')}>${money(p.amount)}</span>
             </div>
             <div class="pay-actions">
@@ -1236,7 +1286,7 @@
           ${recent.map(function (p) {
             return html`<div class="row" key=${p.id}>
               <span class="row-main">
-                <span class="row-title">${t('settle.paidLine', { from: nameOf(c.byId[p.fromId]), to: nameOf(c.byId[p.toId]) })}</span>
+                <span class="row-title">${t('settle.paidLine', { from: whoName(c, p.fromId), to: whoName(c, p.toId, true) })}</span>
                 <span class="row-sub">${fmtDate(p.date)}</span>
               </span>
               <span class="amt">${money(p.amount)}</span>
@@ -1292,7 +1342,7 @@
         var bill = entry.bill;
         rows.push(html`<button class="banner event" key=${entry.key} onClick=${function () { c.go('bill', bill.id); }}>
           <${Icon} name="receipt" size=${18} />
-          <span class="row-main">${t('chat.billAdded', { name: nameOf(c.byId[bill.payerId]), amount: money(Calc.billShares(bill).total), title: bill.title })}</span>
+          <span class="row-main">${t('chat.billAdded', { name: whoName(c, bill.payerId), amount: money(Calc.billShares(bill).total), title: bill.title })}</span>
           <span class="link-text">${t('chat.view')}</span>
         </button>`);
         return;
@@ -1339,6 +1389,8 @@
     // A guest types the names of the people in the group instead.
     var ns = useState([]), names = ns[0], setNames = ns[1];
     var ty = useState(''), typed = ty[0], setTyped = ty[1];
+    var ic = useState(null), icon = ic[0], setIcon = ic[1];
+    var preset = c.allGroups.length % COLORS.length;
 
     function toggle(id) {
       setPicked(picked.indexOf(id) === -1 ? picked.concat(id) : picked.filter(function (x) { return x !== id; }));
@@ -1352,9 +1404,9 @@
         store.put('people', id, newPerson(n, c.people.length + i));
         return id;
       });
-      store.put('groups', gid, {
-        name: clean, ownerId: c.me.id, memberIds: [c.me.id].concat(ids), preset: c.allGroups.length % COLORS.length, createdAt: Date.now()
-      });
+      store.put('groups', gid, Object.assign({
+        name: clean, ownerId: c.me.id, memberIds: [c.me.id].concat(ids), preset: preset, createdAt: Date.now()
+      }, icon ? { icon: icon } : {}));
       c.go('group', null, gid);
     }
     function create() {
@@ -1362,9 +1414,9 @@
       if (!clean) { setErr(t('newGroup.needName')); return; }
       var gid = store.newId();
       if (c.data.guest) { createAsGuest(clean, gid); return; }
-      store.put('groups', gid, {
-        name: clean, ownerId: c.me.id, memberIds: [c.me.id], preset: c.allGroups.length % COLORS.length, createdAt: Date.now()
-      }).then(function () {
+      store.put('groups', gid, Object.assign({
+        name: clean, ownerId: c.me.id, memberIds: [c.me.id], preset: preset, createdAt: Date.now()
+      }, icon ? { icon: icon } : {})).then(function () {
         return Promise.all(picked.map(function (uid) { return store.inviteToGroup(gid, uid); }));
       }).catch(function () { c.say(t('app.saveFailed')); });
       c.go('group', null, gid);
@@ -1377,6 +1429,11 @@
         <label class="eyebrow" for="new-group-name">${t('newGroup.name')}</label>
         <input id="new-group-name" class="field" placeholder=${t('newGroup.namePh')} value=${name} autocomplete="off" onInput=${function (ev) { setName(ev.target.value); setErr(''); }} />
         ${err && html`<p class="warn-text" role="alert">${err}</p>`}
+      </section>
+
+      <section class="section">
+        <h2 class="eyebrow">${t('groupIcon.label')}</h2>
+        <${IconPicker} value=${icon} color=${COLORS[preset]} onPick=${setIcon} />
       </section>
 
       ${c.data.guest && html`<section class="section">
@@ -1493,6 +1550,11 @@
         <input id="group-name" class="field" value=${name} autocomplete="off"
           onInput=${function (e) { setName(e.target.value); }}
           onChange=${function (e) { rename(e.target.value); }} />
+      </section>`}
+
+      ${admin && html`<section class="section">
+        <h2 class="eyebrow">${t('groupIcon.label')}</h2>
+        <${IconPicker} value=${groupIcon(g)} color=${groupColor(g)} onPick=${function (v) { saveGroup(g, { icon: v }).catch(function () { c.say(t('app.saveFailed')); }); }} />
       </section>`}
 
       <section class="section">
@@ -1737,7 +1799,7 @@
       <${Head} title=${t('settle.title')} />
       <section class="card hero">
         <p class="muted">${net > 0 ? t('home.owed') : net < 0 ? t('home.owe') : t('home.square')}</p>
-        <p class="big">${money(Math.abs(net))}</p>
+        <p class="big"><${BigMoney} n=${net} /></p>
         ${(pay.length > 0 || get.length > 0) && html`<p class="muted">${t('settleAll.summary', { get: money(sum(get)), pay: money(sum(pay)) })}</p>`}
       </section>
       ${!pay.length && !get.length && html`<p class="empty">${t('settleAll.none')}</p>`}
