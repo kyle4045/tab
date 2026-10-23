@@ -17,7 +17,7 @@
       appId: '1:725374171834:web:8bf44d8ca40788d620a083'
     },
     // The Apps Script web app that reads receipts and runs the bill assistant (proxy/).
-    aiUrl: '',
+    aiUrl: 'https://script.google.com/macros/s/AKfycbw3XwfkquB5oCPlYTSDwwykC8Zi6Un_o-rQL-5KlWDaQUVj-jS9IKJy1W4cxvfHGcFj/exec',
     emulator: emulator
   };
 })();
