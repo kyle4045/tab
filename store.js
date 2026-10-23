@@ -114,17 +114,33 @@
   }
 
   // One live query per group for its chat, bills and payments, opened as
-  // groups appear and closed as they go.
+  // groups appear and closed as they go. A group made on this device is only
+  // watched once the database has stored it: until then the rules can't see
+  // it and would turn the queries away. A query that fails anyway is tried
+  // again a few times.
+  var retries = {};
+  function retry(key, again, e) {
+    if (config.emulator) console.warn('feed failed', key, e && e.code);
+    var n = (retries[key] || 0) + 1;
+    retries[key] = n;
+    if (n > 5) return;
+    setTimeout(function () {
+      var groupId = key.split('/').pop();
+      if (db && state.groups.some(function (g) { return g.id === groupId; })) again();
+    }, 1000 * n);
+  }
   function watchChat(groupId) {
     if (chatStops[groupId]) return;
+    var key = 'chat/' + groupId;
     chatStops[groupId] = db.collection(chatPath(groupId)).orderBy('at', 'desc').limit(CHAT_KEEP).onSnapshot(function (snap) {
+      retries[key] = 0;
       var chats = Object.assign({}, state.chats);
       chats[groupId] = rows(snap).reverse();
       state.chats = chats;
       emit();
-    }, function () {
-      // That chat stays empty for now; the next change to the groups list tries again.
+    }, function (e) {
       delete chatStops[groupId];
+      retry(key, function () { watchChat(groupId); }, e);
     });
   }
   function watchPart(name, groupId) {
@@ -137,14 +153,19 @@
       checkReady();
       emit();
     }
-    partStops[key] = db.collection('groups/' + groupId + '/' + name).onSnapshot(function (snap) { done(rows(snap)); }, function () {
+    partStops[key] = db.collection('groups/' + groupId + '/' + name).onSnapshot(function (snap) {
+      retries[key] = 0;
+      done(rows(snap));
+    }, function (e) {
       delete partStops[key];
-      done([]);
+      if (!arrived[key]) done([]);
+      retry(key, function () { watchPart(name, groupId); }, e);
     });
   }
-  function syncGroups() {
+  // saved: the ids of the groups the database has already stored.
+  function syncGroups(saved) {
     var ids = state.groups.map(function (g) { return g.id; });
-    ids.forEach(function (id) {
+    saved.forEach(function (id) {
       watchChat(id);
       PARTS.forEach(function (name) { watchPart(name, id); });
     });
@@ -167,6 +188,7 @@
     });
   }
 
+
   function stopAll() {
     stops.forEach(function (stop) { stop(); });
     stops = [];
@@ -176,6 +198,7 @@
     partStops = {};
     parts = { bills: {}, payments: {} };
     arrived = {};
+    retries = {};
     sample = null;
     Object.assign(state, {
       ready: false, persistent: false, user: null, inCircle: null, meId: null, choosing: false,
@@ -192,9 +215,10 @@
     state.canUpload = true;
     sample = aiClient();
     state.canAsk = state.canScan = !!config.aiUrl;
-    stops.push(db.collection('groups').where('memberUids', 'array-contains', uid).onSnapshot(function (snap) {
+    // With metadata changes, a snapshot also arrives when a new group is stored.
+    stops.push(db.collection('groups').where('memberUids', 'array-contains', uid).onSnapshot({ includeMetadataChanges: true }, function (snap) {
       state.groups = rows(snap);
-      syncGroups();
+      syncGroups(snap.docs.filter(function (doc) { return !doc.metadata.hasPendingWrites; }).map(function (doc) { return doc.id; }));
       arrived.groups = true;
       checkReady();
       finishJoin();

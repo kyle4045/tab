@@ -71,6 +71,13 @@ try {
   await owner.fill('#setup-name', 'Kyle');
   await owner.getByText('Load an example outing instead').click();
   check(await seen(owner, 'This is example data.'), 'example outing loads into a new group');
+  // Without a reload: the bills of a group made a moment ago must show.
+  check(await seen(owner, 'Hotpot night'), 'bills in a brand-new group show without a reload');
+  await owner.getByRole('button', { name: /Open group chat/ }).click();
+  await owner.getByPlaceholder('Message the group').fill('First message');
+  await owner.keyboard.press('Enter');
+  check(await seen(owner, 'First message'), 'chat in a brand-new group works without a reload');
+  await owner.waitForTimeout(1500);
 
   // 3. The money maths from HANDOFF.md, read back from the database.
   await owner.reload();
@@ -100,6 +107,7 @@ try {
   await owner.getByPlaceholder('Message the group').fill('Hello from Kyle');
   await owner.keyboard.press('Enter');
   check(await seen(owner, 'Hello from Kyle'), 'owner can post in the group chat');
+  await owner.waitForTimeout(1500); // let the message reach the database before the page reloads
   await openGroup(owner);
   await owner.getByRole('button', { name: 'Members', exact: true }).click();
   await owner.getByText('Invite a friend').click();
