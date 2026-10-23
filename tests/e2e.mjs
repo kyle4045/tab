@@ -181,7 +181,8 @@ try {
   check(await kyle.getByRole('button', { name: 'Send in LINE' }).count() > 0, 'LINE is still offered for a reminder');
   await button(kyle, 'Send to dana privately').click();
   check(await seen(kyle, 'Sent to dana.'), 'Kyle sends Dana a private reminder');
-  await button(kyle, 'Send the plan to the group chat').click();
+  await shot(kyle, '06a2-settle');
+  await button(kyle, 'Share the plan in the group chat').click();
   check(await seen(kyle, 'Sent to the group chat.'), 'Kyle sends the plan to the group chat');
   await tab(dana, 'Friends');
   check(await seen(dana, 'Payment reminder · Hotpot', 15000), "Dana's Friends list shows Kyle's reminder");

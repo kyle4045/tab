@@ -1333,7 +1333,7 @@
 
       ${plan.length > 0 && inApp && html`<div class="stack">
         <button class="btn" onClick=${function () { toGroup(planText(), card('plan', plan)); }}><${Icon} name="chat" />${t('settle.planToGroup')}</button>
-        <button class="btn ghost" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>
+        <p class="links"><button class="link quiet" onClick=${function () { c.line(planText()); }}>${t('bill.copy')}</button></p>
       </div>`}
       ${plan.length > 0 && !inApp && html`<button class="btn" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>`}
 
@@ -1343,8 +1343,10 @@
           <p class="muted">${reminder(asking)}</p>
           <button class="btn" onClick=${function () { toGroup(reminder(asking), card('remind', [asking])); setAsking(null); }}><${Icon} name="chat" />${t('share.toGroup')}</button>
           ${c.data.friends.indexOf(asking.fromId) !== -1 && html`<button class="btn secondary" onClick=${function () { toFriend(asking.fromId, reminder(asking), card('remind', [asking])); setAsking(null); }}><${Icon} name="user" />${t('share.toFriend', { name: nameOf(c.byId[asking.fromId]) })}</button>`}
-          <button class="btn ghost" onClick=${function () { c.line(reminder(asking)); setAsking(null); }}><${Icon} name="send" />${t('bill.copy')}</button>
-          <button class="btn ghost" onClick=${function () { setAsking(null); }}>${t('common.cancel')}</button>
+          <p class="links">
+            <button class="link quiet" onClick=${function () { c.line(reminder(asking)); setAsking(null); }}>${t('bill.copy')}</button><span aria-hidden="true">·</span>
+            <button class="link quiet" onClick=${function () { setAsking(null); }}>${t('common.cancel')}</button>
+          </p>
         </div>
       </div>`}`;
   }
