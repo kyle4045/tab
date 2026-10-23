@@ -3,7 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<script>
+  // LINE's own browser can't sign in with Google and doesn't keep the login:
+  // ask LINE to open the page in the phone's browser before anything else loads.
+  if (/\bLine\//.test(navigator.userAgent || '') && !/[?&]openExternalBrowser=1/.test(location.search)) {
+    window.tabLeaving = true;
+    location.replace(location.pathname + (location.search ? location.search + '&' : '?') + 'openExternalBrowser=1' + location.hash);
+  }
+</script>
 <title>Tab Bill Splitter</title>
+<!-- Added to a phone's home screen, Tab opens full-screen with its own icon and name. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<meta name="apple-mobile-web-app-title" content="Tab">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#FFFFFF">
 <!-- Open the connections the app needs while the page is still loading. -->
 <link rel="preconnect" href="https://firestore.googleapis.com">
 <link rel="preconnect" href="https://securetoken.googleapis.com">

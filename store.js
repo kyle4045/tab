@@ -464,12 +464,8 @@
   }
 
   function start() {
-    // LINE's own browser can't sign in with Google and doesn't keep the login:
-    // this asks LINE to open the page in the phone's browser instead.
-    if (/\bLine\//.test(navigator.userAgent || '') && !/[?&]openExternalBrowser=1/.test(location.search)) {
-      location.replace(location.pathname + (location.search ? location.search + '&' : '?') + 'openExternalBrowser=1' + location.hash);
-      return;
-    }
+    // Inside LINE, index.html has already asked LINE to open the phone's browser.
+    if (window.tabLeaving) return;
     if (!fb || !config.firebase) { state.auth = 'none'; state.ready = true; emit(); return; }
     fb.initializeApp(config.firebase);
     auth = fb.auth();
