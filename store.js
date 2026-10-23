@@ -650,8 +650,11 @@
     emit();
   }
 
-  function sendMessage(groupId, personId, text) {
+  // card: a reminder, settle-up plan or bill sent into the chat ({kind, groupId,
+  // payments, ...}); text is its fallback, in the sender's language.
+  function sendMessage(groupId, personId, text, card) {
     var doc = { personId: personId, text: String(text).slice(0, 1000), at: Date.now() };
+    if (card) doc.card = card;
     var list = state.chats[groupId] || [];
     var oldest = list.length >= CHAT_KEEP ? list[0] : null;
     var path = chatPath(groupId);
@@ -662,8 +665,9 @@
   }
 
   // A private message to a friend, kept to the newest 200 like group chat.
-  function sendDm(uid, text) {
+  function sendDm(uid, text, card) {
     var doc = { personId: me(), text: String(text).slice(0, 1000), at: Date.now() };
+    if (card) doc.card = card;
     var list = state.dms[uid] || [];
     var oldest = list.length >= CHAT_KEEP ? list[0] : null;
     var col = db.collection(dmPath(uid));

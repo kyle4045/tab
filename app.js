@@ -36,6 +36,7 @@
     swap: 'M4 8h15l-4-4M20 16H5l4 4',
     user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20.5a7 7 0 0 1 14 0',
     chevron: 'M9 6l6 6-6 6',
+    bell: 'M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0',
     // group icons
     bowl: 'M3 11h18a9 9 0 0 1-18 0zM8 7.5c0-1.5 1-1.5 1-3M12 7.5c0-1.5 1-1.5 1-3M16 7.5c0-1.5 1-1.5 1-3',
     boba: 'M6 8h12l-1.6 13H7.6zM5 8h14M12 8l2.5-5M9.5 15.5h.01M12 17.5h.01M14.5 15.5h.01',
@@ -82,6 +83,16 @@
   function whoName(c, id, obj) {
     return id === c.me.id ? t(obj ? 'people.youObj' : 'people.you') : nameOf(c.byId[id]);
   }
+  // The title of a card sent into a chat (see ChatCard), in the reader's language.
+  function cardTitle(card, groups) {
+    var g = (groups || []).filter(function (x) { return x.id === card.groupId; })[0];
+    var group = g && g.name ? g.name : '';
+    if (card.kind === 'remind') return t('card.remind', { group: group });
+    if (card.kind === 'plan') return t('card.plan', { group: group });
+    return t('card.bill', { title: card.title || '', group: group });
+  }
+  // What a list shows for a chat message: a card by its title, anything else as written.
+  function lineOf(m, groups) { return m.card && m.card.kind ? cardTitle(m.card, groups) : m.text; }
   function sortBills(bills) {
     return bills.slice().sort(function (a, b) {
       if (a.date !== b.date) return a.date < b.date ? 1 : -1;
@@ -1179,6 +1190,15 @@
       var names = (bill.items || []).filter(function (it) { return ids.indexOf(it.id) !== -1; }).map(function (it) { return it.name; });
       return names.length ? names.join(sep) : t('bill.nothing');
     }
+    var there = present.indexOf(c.me.id) !== -1;
+    var mine = Math.round(sh.shares[c.me.id] || 0);
+    function shareToGroup() {
+      var payments = owers.map(function (id) { return { fromId: id, toId: bill.payerId, amount: Math.round(sh.shares[id] || 0) }; })
+        .filter(function (x) { return x.amount > 0; });
+      var cd = { kind: 'bill', groupId: c.group.id, billId: bill.id, title: bill.title, payments: payments };
+      store.sendMessage(c.group.id, c.me.id, billText(bill, sh, c.byId), cd).catch(function () { c.say(t('chat.failed')); });
+      c.say(t('share.sentGroup'));
+    }
     function row(id, isPayer) {
       var person = c.byId[id] || {};
       return html`<div class="row top" key=${id}>
@@ -1200,27 +1220,26 @@
       />
 
       <section class="card hero">
-        <p class="muted">${t('bill.paidBy', { name: payerName })}</p>
-        <p class="big"><${BigMoney} n=${sh.total} /></p>
-        <p class="muted">${[plural('bill.items', (bill.items || []).length)].concat(extras.length ? [t('bill.includes', { list: extras.join(' + ') })] : []).join(' · ')}</p>
+        <p class="muted">${[t('home.paid', { name: payerName, amount: money(sh.total) }), plural('bill.items', (bill.items || []).length)].concat(extras.length ? [t('bill.includes', { list: extras.join(' + ') })] : []).join(' · ')}</p>
+        <p class="muted">${iPaid && back > 0 ? t('bill.youGetBack') : !iPaid && there ? t('bill.yourShare') : t('bill.total')}</p>
+        <p class=${'big' + (iPaid && back > 0 ? ' owed' : '')}><${BigMoney} n=${iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total} /></p>
       </section>
 
       <section class="section grow">
-        <h2 class="eyebrow">${iPaid ? t('bill.whoOwesYou') : t('bill.whoOwes', { name: payerName })}</h2>
+        <h2 class="eyebrow">${t('bill.everyone')}</h2>
         <div class="list">
           ${owers.map(function (id) { return row(id, false); })}
           ${present.indexOf(bill.payerId) !== -1 && row(bill.payerId, true)}
         </div>
       </section>
 
-      <div class="banner">
-        <span>${iPaid ? t('bill.youGetBack') : t('bill.getsBack', { name: payerName })}</span>
-        <span class="amt owed">${money(back)}</span>
-      </div>
-
       <div class="stack">
-        <button class=${c.data.guest ? 'btn' : 'btn ghost'} onClick=${function () { c.line(billText(bill, sh, c.byId)); }}><${Icon} name="send" />${t('bill.copy')}</button>
-        ${!confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}><${Icon} name="trash" size=${18} />${t('bill.delete')}</button>`}
+        ${!c.data.guest && html`<button class="btn" onClick=${shareToGroup}><${Icon} name="chat" />${t('bill.shareGroup')}</button>`}
+        ${c.data.guest && html`<button class="btn" onClick=${function () { c.line(billText(bill, sh, c.byId)); }}><${Icon} name="send" />${t('bill.copy')}</button>`}
+        ${!confirming && html`<p class="links">
+          ${!c.data.guest && html`<button class="link quiet" onClick=${function () { c.line(billText(bill, sh, c.byId)); }}>${t('bill.copy')}</button><span aria-hidden="true">·</span>`}
+          <button class="link danger" onClick=${function () { setConfirming(true); }}>${t('bill.delete')}</button>
+        </p>`}
         ${confirming && html`<${Confirm} text=${t('bill.deleteAsk')} label=${t('common.delete')}
           onCancel=${function () { setConfirming(false); }}
           onConfirm=${function () { store.remove('bills', bill.id); c.go('group'); }} />`}
@@ -1247,12 +1266,15 @@
     function reminder(p) {
       return t('settle.reminder', { from: nameOf(c.byId[p.fromId]), to: nameOf(c.byId[p.toId]), amount: money(p.amount) });
     }
-    function toGroup(text) {
-      store.sendMessage(c.group.id, c.me.id, text).catch(function () { c.say(t('chat.failed')); });
+    function card(kind, list) {
+      return { kind: kind, groupId: c.group.id, payments: list.map(function (x) { return { fromId: x.fromId, toId: x.toId, amount: Math.round(x.amount) }; }) };
+    }
+    function toGroup(text, cd) {
+      store.sendMessage(c.group.id, c.me.id, text, cd).catch(function () { c.say(t('chat.failed')); });
       c.say(t('share.sentGroup'));
     }
-    function toFriend(uid, text) {
-      store.sendDm(uid, text).catch(function () { c.say(t('chat.failed')); });
+    function toFriend(uid, text, cd) {
+      store.sendDm(uid, text, cd).catch(function () { c.say(t('chat.failed')); });
       c.say(t('share.sentFriend', { name: nameOf(c.byId[uid]) }));
     }
     function planText() {
@@ -1310,7 +1332,7 @@
       </section>`}
 
       ${plan.length > 0 && inApp && html`<div class="stack">
-        <button class="btn" onClick=${function () { toGroup(planText()); }}><${Icon} name="chat" />${t('settle.planToGroup')}</button>
+        <button class="btn" onClick=${function () { toGroup(planText(), card('plan', plan)); }}><${Icon} name="chat" />${t('settle.planToGroup')}</button>
         <button class="btn ghost" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>
       </div>`}
       ${plan.length > 0 && !inApp && html`<button class="btn" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>`}
@@ -1319,8 +1341,8 @@
         <div class="sheet-card">
           <h2 class="eyebrow">${t('settle.remindTitle', { name: nameOf(c.byId[asking.fromId]) })}</h2>
           <p class="muted">${reminder(asking)}</p>
-          <button class="btn" onClick=${function () { toGroup(reminder(asking)); setAsking(null); }}><${Icon} name="chat" />${t('share.toGroup')}</button>
-          ${c.data.friends.indexOf(asking.fromId) !== -1 && html`<button class="btn secondary" onClick=${function () { toFriend(asking.fromId, reminder(asking)); setAsking(null); }}><${Icon} name="user" />${t('share.toFriend', { name: nameOf(c.byId[asking.fromId]) })}</button>`}
+          <button class="btn" onClick=${function () { toGroup(reminder(asking), card('remind', [asking])); setAsking(null); }}><${Icon} name="chat" />${t('share.toGroup')}</button>
+          ${c.data.friends.indexOf(asking.fromId) !== -1 && html`<button class="btn secondary" onClick=${function () { toFriend(asking.fromId, reminder(asking), card('remind', [asking])); setAsking(null); }}><${Icon} name="user" />${t('share.toFriend', { name: nameOf(c.byId[asking.fromId]) })}</button>`}
           <button class="btn ghost" onClick=${function () { c.line(reminder(asking)); setAsking(null); }}><${Icon} name="send" />${t('bill.copy')}</button>
           <button class="btn ghost" onClick=${function () { setAsking(null); }}>${t('common.cancel')}</button>
         </div>
@@ -1350,8 +1372,10 @@
         return;
       }
       var m = entry.message;
+      var isCard = !!(m.card && m.card.kind);
       if (m.personId === c.me.id) {
-        rows.push(html`<div class="bubble me" key=${entry.key}><p>${m.text}</p></div>`);
+        rows.push(isCard ? html`<${ChatCard} key=${entry.key} c=${c} card=${m.card} mine=${true} />`
+          : html`<div class="bubble me" key=${entry.key}><p>${m.text}</p></div>`);
         return;
       }
       var person = c.byId[m.personId] || {};
@@ -1359,11 +1383,26 @@
         <${Avatar} person=${person} size=${32} />
         <div class="msg-body">
           ${names && html`<span class="msg-name">${nameOf(person)}</span>`}
-          <div class="bubble ai"><p>${m.text}</p></div>
+          ${isCard ? html`<${ChatCard} c=${c} card=${m.card} />` : html`<div class="bubble ai"><p>${m.text}</p></div>`}
         </div>
       </div>`);
     });
     return rows;
+  }
+
+  // A reminder, settle-up plan or bill sent into a chat. It is drawn for the
+  // reader (their language, "you" for them), with a way to act on it.
+  function ChatCard(p) {
+    var c = p.c, card = p.card;
+    var g = c.groups.filter(function (x) { return x.id === card.groupId; })[0];
+    return html`<div class=${'chat-card' + (p.mine ? ' me' : '')}>
+      <p class="chat-card-title"><${Icon} name=${card.kind === 'bill' ? 'receipt' : 'bell'} size=${16} />${cardTitle(card, c.groups)}</p>
+      ${(card.payments || []).map(function (x, i) {
+        return html`<p class="chat-card-line" key=${i}><span>${whoName(c, x.fromId)} → ${whoName(c, x.toId, true)}</span><span class="amt">${money(x.amount)}</span></p>`;
+      })}
+      ${g && card.kind === 'bill' && html`<button class="btn small" onClick=${function () { c.go('bill', card.billId, g.id); }}>${t('card.openBill')}</button>`}
+      ${g && card.kind !== 'bill' && html`<button class="btn small" onClick=${function () { c.go('settle', null, g.id); }}>${t('card.openSettle')}</button>`}
+    </div>`;
   }
 
   // The message box at the bottom of a conversation.
@@ -1430,7 +1469,7 @@
     }, [timeline.length]);
 
     return html`
-      <${Head} onBack=${function () { c.go('people'); }} title=${p.name}
+      <${Head} onBack=${function () { if (c.from === 'person') c.go('person', p.id); else c.go('people'); }} title=${p.name}
         right=${html`<button class="icon-btn bare" aria-label=${t('dm.profile', { name: p.name })} onClick=${function () { c.go('person', p.id, undefined, 'dm'); }}><${Avatar} person=${p} size=${40} /></button>`} />
 
       <section class="chat grow">
@@ -1744,22 +1783,22 @@
         <div class="list">
           ${c.friends.slice().sort(function (x, y) { return y.dm.lastAt - x.dm.lastAt; }).map(function (p) {
             var n = groupCount(p);
-            return html`<button class="row tap" key=${p.id} onClick=${function () { c.go('dm', p.id); }}>
-              <${Avatar} person=${p} size=${44} />
-              <span class="row-main">
-                <span class="line">
-                  <span class="row-title clip">${p.name}</span>
-                  ${p.dm.lastAt > 0 && html`<span class="hint">${when(p.dm.lastAt)}</span>`}
+            return html`<div class="row" key=${p.id}>
+              <button class="row-btn" onClick=${function () { c.go('person', p.id); }}>
+                <${Avatar} person=${p} size=${44} />
+                <span class="row-main">
+                  <span class="row-title">${p.name}</span>
+                  <span class="row-sub">${p.dm.lastLine || (n ? plural('people.inGroups', n) : t('people.noGroup'))}</span>
                 </span>
-                <span class="line">
-                  <span class="row-sub clip">${p.dm.lastLine || (n ? plural('people.inGroups', n) : t('people.noGroup'))}</span>
-                  <${Badge} n=${p.dm.unread} />
-                </span>
-              </span>
-            </button>`;
+              </button>
+              <button class="icon-btn chat-btn" aria-label=${t('dm.placeholder', { name: p.name })} onClick=${function () { c.go('dm', p.id); }}>
+                <${Icon} name="chat" />
+                ${p.dm.unread > 0 && html`<span class="badge" aria-hidden="true">${p.dm.unread > 9 ? '9+' : p.dm.unread}</span>`}
+              </button>
+            </div>`;
           })}
         </div>
-        <button class="btn" onClick=${function () { c.go('addFriend'); }}><${Icon} name="plus" size=${18} weight=${2.5} />${t('friends.add')}</button>
+        ${c.friends.length === 0 && html`<button class="btn" onClick=${function () { c.go('addFriend'); }}><${Icon} name="plus" size=${18} weight=${2.5} />${t('friends.add')}</button>`}
       </section>
 
       ${outgoing.length > 0 && html`<section class="section">
@@ -2091,6 +2130,16 @@
     var k = useState(false), confirming = k[0], setConfirming = k[1];
     var friend = c.data.friends.indexOf(p.id) !== -1;
     var shared = c.groups.filter(function (g) { return g.memberIds.indexOf(p.id) !== -1; });
+    var me = c.friends.filter(function (f) { return f.id === p.id; })[0];
+    var unread = me && me.dm ? me.dm.unread : 0;
+    // What the two of them owe each other in a group's settle-up plan: + they owe the viewer.
+    function between(g) {
+      return Math.round(Calc.settle(g.net).reduce(function (v, x) {
+        if (x.fromId === p.id && x.toId === c.me.id) return v + x.amount;
+        if (x.fromId === c.me.id && x.toId === p.id) return v - x.amount;
+        return v;
+      }, 0));
+    }
     function unfriend() {
       store.removeFriend(p.id).catch(function () { c.say(t('app.saveFailed')); });
       c.go('people');
@@ -2102,13 +2151,29 @@
     return html`
       <${Head} onBack=${back} title=${t('person.title')} />
       <section class="section center">
-        <${Avatar} person=${p} size=${112} />
-        <p class="lead-title">${p.name}</p>
-        <p class="muted">${shared.length ? shared.map(function (g) { return g.name; }).join(' · ') : t('people.noGroup')}</p>
+        <${Avatar} person=${p} size=${96} />
+        <h2 class="display">${p.name}</h2>
+      </section>
+      ${friend && html`<button class="btn" onClick=${function () { c.go('dm', p.id, undefined, 'person'); }}><${Icon} name="chat" />${t('dm.open')}${unread > 0 && html`<span class="badge inline">${unread > 9 ? '9+' : unread}</span>`}</button>`}
+      <section class="section">
+        <h2 class="eyebrow">${t('person.shared')}</h2>
+        ${shared.length === 0 && html`<p class="empty">${t('people.noGroup')}</p>`}
+        <div class="list">
+          ${shared.map(function (g) {
+            var v = between(g);
+            return html`<button class="row tap" key=${g.id} onClick=${function () { c.go(v ? 'settle' : 'group', null, g.id); }}>
+              <${GroupAvatar} group=${g} size=${40} />
+              <span class="row-main">
+                <span class="row-title">${g.name}</span>
+                <span class=${'row-sub' + (v > 0 ? ' owed' : v < 0 ? ' owes' : '')}>${v > 0 ? t('person.owesYou', { name: p.name, amount: money(v) }) : v < 0 ? t('person.youOwe', { name: p.name, amount: money(-v) }) : t('person.even')}</span>
+              </span>
+              <${Icon} name="chevron" size=${18} />
+            </button>`;
+          })}
+        </div>
       </section>
       <div class="stack grow-top">
-        ${friend && html`<button class="btn" onClick=${function () { c.go('dm', p.id); }}><${Icon} name="chat" />${t('dm.open')}</button>`}
-        ${friend && !confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}>${t('friends.remove')}</button>`}
+        ${friend && !confirming && html`<p class="links"><button class="link danger" onClick=${function () { setConfirming(true); }}>${t('friends.remove')}</button></p>`}
         ${confirming && html`<${Confirm} text=${t('friends.removeAsk', { name: p.name })} label=${t('common.remove')}
           onCancel=${function () { setConfirming(false); }} onConfirm=${unfriend} />`}
       </div>`;
@@ -2185,7 +2250,7 @@
       var last = messages[messages.length - 1];
       return {
         lastAt: last ? last.at || 0 : 0,
-        lastLine: !last ? '' : me && last.personId === me.id ? t('groups.you', { text: last.text }) : last.text,
+        lastLine: !last ? '' : me && last.personId === me.id ? t('groups.you', { text: lineOf(last, data.groups) }) : lineOf(last, data.groups),
         unread: me ? messages.filter(function (m) { return m.at > (data.chatRead['dm:' + p.id] || 0) && m.personId !== me.id; }).length : 0
       };
     }
@@ -2201,8 +2266,8 @@
       var last = messages[messages.length - 1];
       var lastAt = bills.reduce(function (m, b) { return Math.max(m, b.createdAt || 0); }, Math.max(g.createdAt || 0, last ? last.at || 0 : 0));
       var lastLine = !last ? ''
-        : me && last.personId === me.id ? t('groups.you', { text: last.text })
-        : t('groups.said', { name: nameOf(byId[last.personId]), text: last.text });
+        : me && last.personId === me.id ? t('groups.you', { text: lineOf(last, data.groups) })
+        : t('groups.said', { name: nameOf(byId[last.personId]), text: lineOf(last, data.groups) });
       return Object.assign({}, g, {
         name: g.name || t('group.default'),
         memberIds: memberIds,

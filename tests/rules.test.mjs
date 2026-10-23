@@ -216,6 +216,9 @@ test('private messages: only the two friends read and send them', async () => {
   await assertFails(sean.doc('dms/kyle_sean/messages/m3').set(msg('kyle')));
   await assertFails(kyle.doc('dms/kyle_sean/messages/m4').set(msg('kyle', 'x'.repeat(1001))));
   await assertFails(kyle.doc('dms/kyle_sean/messages/m5').set(Object.assign(msg('kyle'), { extra: 1 })));
+  // A reminder travels as a card next to its text.
+  await assertSucceeds(kyle.doc('dms/kyle_sean/messages/m9').set(Object.assign(msg('kyle'), { card: { kind: 'remind', groupId: 'g1', payments: [] } })));
+  await assertFails(kyle.doc('dms/kyle_sean/messages/m10').set(Object.assign(msg('kyle'), { card: 'not a card' })));
   // A third person can neither read nor write; the pair must be in order.
   await assertFails(as('dana').collection('dms/kyle_sean/messages').get());
   await assertFails(as('dana').doc('dms/dana_kyle/messages/m6').set(msg('dana')));

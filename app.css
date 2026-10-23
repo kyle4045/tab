@@ -392,6 +392,28 @@ label.icon-btn { cursor: pointer; }
   display: flex; align-items: center; justify-content: center;
 }
 .link.inline { min-height: 0; padding: 0; font-size: inherit; }
+.link.quiet { color: var(--muted); font-weight: 500; }
+.link.danger { color: var(--danger); font-weight: 500; }
+/* Small text actions under a screen's main button: "Send in LINE · Delete bill". */
+.links { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 14px; }
+/* A list row with two taps: the person (profile) and a chat button. */
+.row-btn {
+  flex: 1 1 0; min-width: 0; min-height: 44px; padding: 0; border: 0; background: transparent; text-align: left;
+  display: flex; align-items: center; gap: 12px;
+}
+.icon-btn.chat-btn { position: relative; }
+.btn .badge { background: var(--on-ink); color: var(--fg); }
+/* A reminder, settle-up plan or bill sent into a chat. */
+.chat-card {
+  max-width: 88%; min-width: 220px; padding: 12px 14px; border: 1px solid var(--fg); border-radius: 16px; background: var(--card);
+  display: flex; flex-direction: column; gap: 6px; font-size: 15px;
+}
+.chat-card.me { align-self: flex-end; }
+.chat-card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.chat-card-line { display: flex; justify-content: space-between; gap: 12px; }
+.chat-card .btn { margin-top: 4px; width: 100%; }
+.row-sub.owed { color: var(--owed); }
+.row-sub.owes { color: var(--owes); }
 .link-text { font-weight: 600; color: var(--fg); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 .composer.cta { background: var(--bg); }
 

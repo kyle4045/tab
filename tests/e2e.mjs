@@ -148,6 +148,9 @@ try {
   }
   await button(kyle, 'Save bill').click();
   check(await seen(kyle, '250'), 'the saved bill splits NT$500 into 250 each');
+  await shot(kyle, '05b-bill');
+  await button(kyle, 'Share in the group chat').click();
+  check(await seen(kyle, 'Sent to the group chat.'), 'Kyle shares the bill in the group chat');
   await openGroup(kyle, 'Hotpot');
   check(await seen(kyle, 'Dinner'), 'the bill shows in the group without a reload');
   await openGroup(dana, 'Hotpot');
@@ -163,6 +166,7 @@ try {
   await openGroup(dana, 'Hotpot');
   await dana.getByRole('button', { name: /Open group chat/ }).click();
   check(await seen(dana, 'Hello from Kyle', 15000), "Dana gets Kyle's message");
+  check(await seen(dana, 'Dinner · Hotpot'), 'the shared bill is a card in the group chat');
   await dana.getByPlaceholder('Message the group').fill('Hi from Dana');
   await dana.keyboard.press('Enter');
   check(await seen(kyle, 'Hi from Dana', 15000), "Kyle gets Dana's reply");
@@ -180,19 +184,25 @@ try {
   await button(kyle, 'Send the plan to the group chat').click();
   check(await seen(kyle, 'Sent to the group chat.'), 'Kyle sends the plan to the group chat');
   await tab(dana, 'Friends');
-  check(await seen(dana, 'please pay kyle', 15000), "Dana's Friends list shows Kyle's reminder");
+  check(await seen(dana, 'Payment reminder · Hotpot', 15000), "Dana's Friends list shows Kyle's reminder");
   check(/1 new message/.test(await dana.locator('nav.tabbar').innerText()), 'the Friends tab shows 1 new message');
   await shot(dana, '06b-friends');
-  await dana.getByRole('button', { name: /^kyle/ }).first().click();
-  check(await seen(dana, 'dana, please pay kyle NT$250'), 'the reminder is in their private chat');
+  await dana.getByRole('button', { name: 'Message kyle', exact: true }).click();
+  check(await seen(dana, 'You → kyle'), 'the reminder is a card in their private chat, written for Dana');
   await dana.getByPlaceholder('Message kyle').fill('Paying now');
   await dana.keyboard.press('Enter');
   await tab(kyle, 'Friends');
   check(await seen(kyle, 'Paying now', 15000), "Kyle gets Dana's private reply");
+  await kyle.getByRole('button', { name: /^dana/ }).first().click();
+  check(await seen(kyle, 'dana owes you NT$250'), "Dana's profile shows their group and what she owes Kyle");
+  await shot(kyle, '06d-profile');
   await shot(dana, '06c-private-chat');
   await openGroup(dana, 'Hotpot');
   await dana.getByRole('button', { name: /Open group chat/ }).click();
-  check(await seen(dana, 'dana → kyle NT$250', 15000), 'the plan is in the group chat');
+  check(await seen(dana, 'Settle-up plan · Hotpot', 15000), 'the plan is a card in the group chat');
+  await shot(dana, '06e-group-cards');
+  await button(dana, 'Go to Settle up').click();
+  check(await seen(dana, 'Mark as paid'), "the plan card's button opens Settle up");
 
   // 8. Dana pays; Kyle's Settle shows it.
   await tab(dana, 'Settle');

@@ -157,7 +157,8 @@ service cloud.firestore {
       allow create: if mine()
         && uids()[0] < uids()[1]
         && friendsWith(uids()[0] == me() ? uids()[1] : uids()[0])
-        && request.resource.data.keys().hasOnly(['personId', 'text', 'at'])
+        && request.resource.data.keys().hasOnly(['personId', 'text', 'at', 'card'])
+        && (!('card' in request.resource.data) || request.resource.data.card is map)
         && request.resource.data.personId == me()
         && request.resource.data.text is string && request.resource.data.text.size() <= 1000;
     }
