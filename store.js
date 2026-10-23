@@ -407,6 +407,12 @@
   }
 
   function start() {
+    // LINE's own browser can't sign in with Google and doesn't keep the login:
+    // this asks LINE to open the page in the phone's browser instead.
+    if (/\bLine\//.test(navigator.userAgent || '') && !/[?&]openExternalBrowser=1/.test(location.search)) {
+      location.replace(location.pathname + (location.search ? location.search + '&' : '?') + 'openExternalBrowser=1' + location.hash);
+      return;
+    }
     if (!fb || !config.firebase) { state.auth = 'none'; state.ready = true; emit(); return; }
     fb.initializeApp(config.firebase);
     auth = fb.auth();
@@ -415,6 +421,10 @@
       auth.useEmulator('http://127.0.0.1:9099');
       db.useEmulator('127.0.0.1', 8080);
     }
+    // Keep a copy of the data on this device, so the next visit shows it at
+    // once while the database catches up. Where the browser can't (some
+    // private windows), it simply loads from the database each time.
+    db.enablePersistence({ synchronizeTabs: true }).catch(noop);
     takeInvite();
     auth.onAuthStateChanged(function (user) {
       stopAll();
@@ -439,7 +449,14 @@
     });
   }
 
-  function signOut() { return auth ? auth.signOut() : Promise.resolve(); }
+  // Signing out also wipes the copy of the data kept on this device, then
+  // starts the page afresh.
+  function signOut() {
+    if (!auth) return Promise.resolve();
+    return auth.signOut().then(function () {
+      return db.terminate().then(function () { return db.clearPersistence(); }).catch(noop);
+    }).then(function () { location.reload(); });
+  }
 
   function newId() {
     return 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);

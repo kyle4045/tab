@@ -244,6 +244,13 @@ try {
   check(shares.total === 2596 && shares.shares.me === 572 && shares.shares.mei === 792 && shares.shares.arjun === 572 && shares.shares.dana === 660,
     'money maths: Hotpot night shares 572 / 792 / 572 / 660, total 2,596');
 
+  // 13. Signing out wipes this device's copy of the data.
+  await tab(kyle, 'Me');
+  await button(kyle, 'Sign out').click();
+  check(await seen(kyle, 'Split bills with your friends', 15000), 'Sign out goes back to the sign-in screen');
+  const leftover = await kyle.evaluate(() => new Promise((r) => { const q = indexedDB.databases ? indexedDB.databases() : Promise.resolve([]); q.then((d) => r(d.map((x) => x.name).filter((n) => /firestore/i.test(n) && /main/.test(n)))); }));
+  check(leftover.length === 0, 'no copy of the data is left on the device after signing out' + (leftover.length ? ': ' + leftover.join(', ') : ''));
+
   check(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
 } catch (e) {
   failures++;
