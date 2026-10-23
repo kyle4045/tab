@@ -53,9 +53,14 @@
     } catch (e) { return {}; }
   }
 
+  // The language and the currency for totals, kept on this device too (a guest has no account).
   function localSettings() {
+    var out = {};
     var lang = localGet('tab.lang');
-    return lang ? { lang: lang } : {};
+    var currency = localGet('tab.currency');
+    if (lang) out.lang = lang;
+    if (currency) out.currency = currency;
+    return out;
   }
 
   var state = {
@@ -84,6 +89,7 @@
     groupInvites: {}, // groupId -> that group's open invitations
     chatRead: readMarks(),
     chats: {}, // groupId -> that group's messages, oldest first
+    rates: null, // exchange rates per US dollar, {date, at, usd: {twd: 32.1, ...}}, for showing amounts converted
     dms: {}, // friend's uid -> the private messages with them, oldest first
     photos: {}, // photo id -> data URL
     canUpload: false,
@@ -501,9 +507,41 @@
     leaveGuest();
   }
 
+  // Exchange rates, only for showing amounts in each person's own currency:
+  // bills always stay in their group's currency. Free daily rates (no key),
+  // kept on this device for 12 hours; the second address is a mirror.
+  var RATE_URLS = [
+    'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.min.json',
+    'https://latest.currency-api.pages.dev/v1/currencies/usd.min.json'
+  ];
+  function loadRates() {
+    var saved = null;
+    try { saved = JSON.parse(localGet('tab.rates')); } catch (e) { saved = null; }
+    if (saved && saved.usd) state.rates = saved;
+    if (saved && saved.usd && Date.now() - saved.at < 12 * 3600 * 1000) return;
+    (function next(i) {
+      if (i >= RATE_URLS.length || !window.fetch) return;
+      fetch(RATE_URLS[i]).then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('rates')); }).then(function (json) {
+        if (!json || !json.usd || !json.usd.twd) throw new Error('rates');
+        state.rates = { date: json.date || '', at: Date.now(), usd: json.usd };
+        localSet('tab.rates', JSON.stringify(state.rates));
+        emit();
+      }).catch(function () { next(i + 1); });
+    })(0);
+  }
+  // amount in currency `from` as currency `to` (codes like 'TWD'), or null without rates.
+  function convert(amount, from, to) {
+    if (from === to) return amount;
+    var r = state.rates && state.rates.usd;
+    var a = r && r[String(from).toLowerCase()];
+    var b = r && r[String(to).toLowerCase()];
+    return a && b ? amount / a * b : null;
+  }
+
   function start() {
     // Inside LINE, index.html has already asked LINE to open the phone's browser.
     if (window.tabLeaving) return;
+    loadRates();
     if (!fb || !config.firebase) { state.auth = 'none'; state.ready = true; emit(); return; }
     fb.initializeApp(config.firebase);
     auth = fb.auth();
@@ -773,6 +811,7 @@
   function saveSettings(patch) {
     var next = Object.assign({}, state.settings, patch);
     if (next.lang) localSet('tab.lang', next.lang);
+    if (next.currency) localSet('tab.currency', next.currency);
     var uid = me();
     if (db && uid && state.inCircle) return guard(db.doc('settings/' + uid).set(next));
     state.settings = next;
@@ -864,13 +903,13 @@
   }
 
   var RECEIPT_PROMPT = [
-    'The image is a photo of a receipt from a restaurant, bar or shop, most likely in Taiwan.',
-    'Prices are in New Taiwan Dollars. Read it and reply with only one JSON object in exactly this shape:',
+    'The image is a photo of a receipt from a restaurant, bar or shop.',
+    'Prices are in {CURRENCY}. Read it and reply with only one JSON object in exactly this shape:',
     '{"title": string, "items": [{"name": string, "price": number, "unsure": boolean}], "servicePct": number or null, "taxPct": number or null, "total": number or null}',
     '',
     'Rules:',
     '- "items": one entry per purchased line, in the order printed. "name" is the item as printed on the receipt, in its original language (keep Chinese as Chinese). If a line has a quantity above 1, append it to the name like " ×3".',
-    '- "price" is the full amount charged for that line (quantity times unit price) as a whole number of dollars, with no currency symbol.',
+    '- "price" is the full amount charged for that line (quantity times unit price) as {AMOUNT}, with no currency symbol.',
     '- A discount that is its own line is an item with a negative price.',
     '- Never list subtotal, total, service charge, tax, tips, cash, change or payment lines as items.',
     '- "unsure" is true when any part of that line was hard to read or you had to guess.',
@@ -881,6 +920,16 @@
     'If the image is not a receipt, reply {"title": "", "items": [], "servicePct": null, "taxPct": null, "total": null}.'
   ].join('\n');
 
+  // The AI is told which currency the group uses, and how its prices are written.
+  // cur: {code, ai: 'Japanese Yen', decimals}; New Taiwan Dollars when not given.
+  function withCurrency(text, cur) {
+    cur = cur || { code: 'TWD', ai: 'New Taiwan Dollars', decimals: 0 };
+    return text.split('{CURRENCY}').join(cur.ai + ' (' + cur.code + ')')
+      .split('{AMOUNT}').join(cur.decimals ? 'a number with up to ' + cur.decimals + ' decimals' : 'a whole number');
+  }
+  // A price from the AI, kept to cents (the app rounds it to the group's currency).
+  function aiPrice(v) { return Math.round(Number(v) * 100) / 100 || 0; }
+
   function pctOrNull(v) {
     var n = Number(v);
     return isFinite(n) && n > 0 && n <= 100 ? n : null;
@@ -888,9 +937,9 @@
 
   // Resolves {title, items:[{name, price, unsure}], servicePct, taxPct, total};
   // rejects with the platform's {code, message}.
-  function scanReceipt(file, signal) {
+  function scanReceipt(file, signal, currency) {
     if (!sample || !state.canScan) return Promise.reject({ code: 'images_unavailable' });
-    return sample.json(RECEIPT_PROMPT, { images: file, signal: signal }).then(function (res) {
+    return sample.json(withCurrency(RECEIPT_PROMPT, currency), { images: file, signal: signal }).then(function (res) {
       res = res && typeof res === 'object' ? res : {};
       var items = Array.isArray(res.items) ? res.items : [];
       var total = Number(res.total);
@@ -899,13 +948,13 @@
         items: items.map(function (it) {
           return {
             name: String(it && it.name != null ? it.name : '').trim().slice(0, 80),
-            price: Math.round(Number(it && it.price)) || 0,
+            price: aiPrice(it && it.price),
             unsure: !!(it && it.unsure)
           };
         }).filter(function (it) { return it.name || it.price; }),
         servicePct: pctOrNull(res.servicePct),
         taxPct: pctOrNull(res.taxPct),
-        total: isFinite(total) && total > 0 ? Math.round(total) : null
+        total: isFinite(total) && total > 0 ? aiPrice(total) : null
       };
     });
   }
@@ -919,7 +968,7 @@
     'Each message from the app gives you TODAY, KNOWN PEOPLE, CURRENT BILL and the person\'s MESSAGE. Rules:',
     '- "bill" is always the COMPLETE bill after applying the latest message, never a partial update. Start from CURRENT BILL and change only what the message (or an attached receipt) calls for. Keep everything else exactly as it is.',
     '- People: use the exact spelling from KNOWN PEOPLE whenever a name, nickname or obvious typo matches one of them. "I", "me", "my", "我" mean the person marked (me). If someone is mentioned who is not in KNOWN PEOPLE, use the name as the person wrote it. "people" is everyone who came to this outing; add anyone the message says came, remove anyone it says did not.',
-    '- Receipt photo: read every purchased line. "name" is the item as printed, in its original language (keep Chinese as Chinese); for a quantity above 1 append it like " ×3". "price" is the full amount charged for that line as a whole number of New Taiwan Dollars. A discount on its own line is an item with a negative price. Never list subtotal, total, service charge, tax, tips, cash, change or payment lines as items. "unsure" is true when part of a line was hard to read.',
+    '- Receipt photo: read every purchased line. "name" is the item as printed, in its original language (keep Chinese as Chinese); for a quantity above 1 append it like " ×3". "price" is the full amount charged for that line as {AMOUNT} in {CURRENCY}. A discount on its own line is an item with a negative price. Never list subtotal, total, service charge, tax, tips, cash, change or payment lines as items. "unsure" is true when part of a line was hard to read.',
     '- Items the person only describes in words (no receipt) are added the same way, with the price they give.',
     '- "sharers": the people who split that item equally. If nobody has said who had an item, everyone in "people" shares it. If one person had it alone, list only that person. "split evenly", "平分", "AA" mean everyone in "people".',
     '- An uneven split of one line (say 2 of 3 beers for one person) becomes separate items ("Beer ×2" and "Beer ×1") with the price divided to match.',
@@ -940,7 +989,7 @@
   // and the current bill. Resolves {reply, bill}; rejects with {code, message}.
   function askAssistant(req) {
     if (!sample) return Promise.reject({ code: 'not_granted' });
-    var turns = [{ role: 'user', content: ASSISTANT_RULES }];
+    var turns = [{ role: 'user', content: withCurrency(ASSISTANT_RULES, req.currency) }];
     (req.history || []).slice(-12).forEach(function (m) {
       if (m.role !== 'user' && m.role !== 'assistant') return;
       turns.push({ role: m.role, content: m.text || '(sent a photo of the receipt)' });
@@ -967,7 +1016,7 @@
           items: (Array.isArray(bill.items) ? bill.items : []).map(function (it) {
             return {
               name: String(it && it.name != null ? it.name : '').trim().slice(0, 80),
-              price: Math.round(Number(it && it.price)) || 0,
+              price: aiPrice(it && it.price),
               sharers: cleanNames(it && it.sharers),
               unsure: !!(it && it.unsure)
             };
@@ -992,6 +1041,7 @@
     markChatRead: markChatRead,
     sendMessage: sendMessage,
     sendDm: sendDm,
+    convert: convert,
     removeGroup: removeGroup,
     askAssistant: askAssistant,
     start: start,

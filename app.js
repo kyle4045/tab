@@ -53,11 +53,65 @@
 
   // ---------- small helpers ----------
 
-  function money(n) {
-    var v = Math.round(n);
-    return (v < 0 ? '−' : '') + 'NT$' + Math.abs(v).toLocaleString('en-US');
+  // Each group has a currency (group.currency; NT$ when unset). decimals: 0 for
+  // whole units (NT$, ¥), 2 for cents (US$, €). ai: what the AI is told.
+  var CURRENCIES = [
+    { code: 'TWD', symbol: 'NT$', decimals: 0, ai: 'New Taiwan Dollars' },
+    { code: 'USD', symbol: 'US$', decimals: 2, ai: 'US Dollars' },
+    { code: 'JPY', symbol: '¥', decimals: 0, ai: 'Japanese Yen' },
+    { code: 'KRW', symbol: '₩', decimals: 0, ai: 'South Korean Won' },
+    { code: 'HKD', symbol: 'HK$', decimals: 2, ai: 'Hong Kong Dollars' },
+    { code: 'CNY', symbol: 'CN¥', decimals: 2, ai: 'Chinese Yuan' },
+    { code: 'SGD', symbol: 'S$', decimals: 2, ai: 'Singapore Dollars' },
+    { code: 'MYR', symbol: 'RM', decimals: 2, ai: 'Malaysian Ringgit' },
+    { code: 'THB', symbol: '฿', decimals: 2, ai: 'Thai Baht' },
+    { code: 'VND', symbol: '₫', decimals: 0, ai: 'Vietnamese Dong' },
+    { code: 'PHP', symbol: '₱', decimals: 2, ai: 'Philippine Pesos' },
+    { code: 'IDR', symbol: 'Rp', decimals: 0, ai: 'Indonesian Rupiah' },
+    { code: 'EUR', symbol: '€', decimals: 2, ai: 'Euros' },
+    { code: 'GBP', symbol: '£', decimals: 2, ai: 'British Pounds' },
+    { code: 'AUD', symbol: 'A$', decimals: 2, ai: 'Australian Dollars' },
+    { code: 'CAD', symbol: 'CA$', decimals: 2, ai: 'Canadian Dollars' }
+  ];
+  function currency(code) { return CURRENCIES.filter(function (x) { return x.code === code; })[0] || CURRENCIES[0]; }
+  function currencyOf(group) { return currency(group && group.currency); }
+  // The currency a person chose for totals (Me), NT$ until they choose.
+  function prefCurrency(c) { return currency(c.data.settings.currency); }
+
+  // The digits of an amount, with the currency's decimals: 1,234 or 1,234.50.
+  function amountText(n, cc) {
+    return Calc.roundTo(n, cc.decimals).toLocaleString('en-US', { minimumFractionDigits: cc.decimals, maximumFractionDigits: cc.decimals });
   }
-  function signed(n) { return (Math.round(n) > 0 ? '+' : '') + money(n); }
+  function money(n, cc) {
+    cc = cc || CURRENCIES[0];
+    var v = Calc.roundTo(n, cc.decimals);
+    return (v < 0 ? '−' : '') + cc.symbol + amountText(Math.abs(v), cc);
+  }
+  function signed(n, cc) { return (Calc.roundTo(n, (cc || CURRENCIES[0]).decimals) > 0 ? '+' : '') + money(n, cc); }
+  // "≈ NT$1,234": an amount shown in the viewer's own currency too, for reference.
+  function approx(n, cc, pref) {
+    if (!n || cc.code === pref.code) return '';
+    var x = store.convert(n, cc.code, pref.code);
+    return x == null ? '' : '≈ ' + money(x, pref);
+  }
+  // Adds up amounts from groups that may use different currencies ({cc, v}), in
+  // the viewer's currency. Others are converted at today's rate (approx: true);
+  // any that can't be (no rates yet) are kept apart, per currency.
+  function totalIn(list, pref) {
+    var out = { amount: 0, approx: false, apart: [] };
+    var apart = {};
+    list.forEach(function (x) {
+      if (!x.v) return;
+      if (x.cc.code === pref.code) { out.amount += x.v; return; }
+      var v = store.convert(x.v, x.cc.code, pref.code);
+      if (v == null) { apart[x.cc.code] = (apart[x.cc.code] || 0) + x.v; return; }
+      out.amount += v;
+      out.approx = true;
+    });
+    out.amount = Calc.roundTo(out.amount, pref.decimals);
+    out.apart = Object.keys(apart).map(function (code) { return { cc: currency(code), v: apart[code] }; }).filter(function (x) { return x.v; });
+    return out;
+  }
   function pad(n) { return n < 10 ? '0' + n : String(n); }
   function iso(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function todayISO() { return iso(new Date()); }
@@ -134,13 +188,13 @@
       createdAt: b.createdAt, example: !!b.example
     };
   }
-  function draftToBill(d) {
+  function draftToBill(d, decimals) {
     var service = Calc.num(d.servicePct);
     var tax = Calc.num(d.taxPct);
     return {
       groupId: d.groupId, title: d.title, date: d.date, payerId: d.payerId, presentIds: d.presentIds.slice(),
       items: d.items.map(function (it) {
-        return { id: it.id, name: it.name, price: Math.round(Calc.num(it.price)), sharerIds: it.sharerIds.slice() };
+        return { id: it.id, name: it.name, price: Calc.roundTo(it.price, decimals), sharerIds: it.sharerIds.slice() };
       }),
       servicePct: d.serviceOn && service > 0 ? service : null,
       taxPct: d.taxOn && tax > 0 ? tax : null
@@ -149,19 +203,20 @@
 
   // Everything the editor and the assistant need to know about a draft:
   // the bill it would save, its shares, and why it can't be saved yet (if so).
-  function draftCheck(draft) {
-    var bill = draftToBill(draft);
-    var sh = Calc.billShares(bill);
+  function draftCheck(draft, cc) {
+    cc = cc || CURRENCIES[0];
+    var bill = draftToBill(draft, cc.decimals);
+    var sh = Calc.billShares(bill, cc.decimals);
     var realItems = bill.items.filter(function (it) { return it.name.trim() || it.price; });
-    var unassigned = Math.round(sh.unassigned * sh.mult);
+    var unassigned = Calc.roundTo(sh.unassigned * sh.mult, cc.decimals);
     var problem = !realItems.length ? t('edit.needItems')
-      : unassigned !== 0 || sh.unassigned !== 0 ? t('edit.unassigned', { amount: money(unassigned) })
+      : unassigned !== 0 || sh.unassigned !== 0 ? t('edit.unassigned', { amount: money(unassigned, cc) })
       : '';
     return { bill: bill, sh: sh, realItems: realItems, problem: problem };
   }
 
   function saveDraft(c, draft) {
-    var chk = draftCheck(draft);
+    var chk = draftCheck(draft, currencyOf(c.group));
     if (chk.problem) return;
     var id = draft.id || store.newId();
     var doc = chk.bill;
@@ -200,7 +255,7 @@
 
   // The screens work on copies of a group with extra working fields; only
   // these are stored.
-  var GROUP_FIELDS = ['name', 'ownerId', 'memberIds', 'preset', 'icon', 'createdAt', 'example'];
+  var GROUP_FIELDS = ['name', 'ownerId', 'memberIds', 'preset', 'icon', 'currency', 'createdAt', 'example'];
   function saveGroup(group, patch) {
     var doc = {};
     GROUP_FIELDS.forEach(function (k) { if (group[k] !== undefined) doc[k] = group[k]; });
@@ -265,9 +320,17 @@
     </div>`;
   }
 
-  // A headline amount: a small "NT$" before a big number.
+  // A headline amount: a small currency symbol ("NT$") before a big number.
   function BigMoney(p) {
-    return html`<span class="cur-sym">NT$</span>${Math.round(Math.abs(p.n)).toLocaleString('en-US')}`;
+    var cc = p.cc || CURRENCIES[0];
+    return html`<span class="cur-sym">${cc.symbol}</span>${amountText(Math.abs(p.n), cc)}`;
+  }
+
+  // Picks one of CURRENCIES.
+  function CurrencySelect(p) {
+    return html`<select id=${p.id} class="field select" value=${p.value} onChange=${function (e) { p.onChange(e.target.value); }}>
+      ${CURRENCIES.map(function (x) { return html`<option key=${x.code} value=${x.code}>${x.symbol} · ${t('currency.' + x.code)} (${x.code})</option>`; })}
+    </select>`;
   }
 
   function reducedMotion() {
@@ -316,10 +379,12 @@
     return html`<span key=${p.n} class="badge inline" aria-label=${plural('groups.unread', p.n)}>${p.n > 9 ? '9+' : p.n}</span>`;
   }
 
-  // A headline amount that counts up to its value when it first shows.
+  // A headline amount that counts up to its value when it first shows (in cents for US$, €).
   function CountMoney(p) {
-    var v = useCountUp(Math.round(Math.abs(p.n)), 700);
-    return html`<${BigMoney} n=${v} />`;
+    var cc = p.cc || CURRENCIES[0];
+    var f = Math.pow(10, cc.decimals);
+    var v = useCountUp(Math.round(Math.abs(p.n) * f), 700);
+    return html`<${BigMoney} n=${v / f} cc=${cc} />`;
   }
 
   // A sheet that springs up from the bottom over a dimmed page and sinks away
@@ -464,9 +529,10 @@
   // The viewer's groups, most recently active first, like a list of chats:
   // each row has the viewer's balance there and the latest message.
   function Home(c) {
-    var net = Calc.balances(c.data.bills, c.data.payments);
-    var mine = Math.round(net[c.me.id] || 0);
-    var shown = useCountUp(Math.abs(mine), 700);
+    // Every group's balance for the viewer, added up in their own currency.
+    var pref = prefCurrency(c);
+    var total = totalIn(c.groups.map(function (g) { return { cc: g.cc, v: g.net[c.me.id] || 0 }; }), pref);
+    var mine = total.amount;
     var pr = useState(false), pressed = pr[0], setPressed = pr[1];
     var timer = useRef(null);
     useEffect(function () { return function () { clearTimeout(timer.current); }; }, []);
@@ -513,8 +579,10 @@
 
       ${c.groups.some(function (g) { return g.bills.length; }) && html`<button type="button" class=${'card hero live' + (pressed ? ' pressed' : '')} onClick=${openSettle}>
         <span class="muted">${mine > 0 ? t('home.owed') : mine < 0 ? t('home.owe') : t('home.square')}</span>
-        <span class="big"><${BigMoney} n=${shown} /></span>
+        <span class="big"><${CountMoney} n=${mine} cc=${pref} /></span>
         <span class="muted">${plural('groups.across', c.groups.length)}</span>
+        ${total.approx && html`<span class="muted fx">${t('fx.note')}</span>`}
+        ${total.apart.map(function (x) { return html`<span class="muted fx" key=${x.cc.code}>${t('fx.apart', { amount: signed(x.v, x.cc) })}</span>`; })}
         <span class="hero-go" aria-hidden="true"><${Icon} name="arrow" size=${20} /></span>
         <span class="visually-hidden">${t('home.openSettle')}</span>
       </button>`}
@@ -528,11 +596,12 @@
         </div>`}
         ${c.groups.length > 0 && html`<div class="tiles stagger">
           ${c.groups.map(function (g, i) {
-            var v = Math.round(g.net[c.me.id] || 0);
+            var v = Calc.roundTo(g.net[c.me.id] || 0, g.cc.decimals);
             return html`<button class="tile" key=${g.id} style=${'background:' + groupColor(g) + ';--i:' + Math.min(i, 8)} onClick=${function () { c.go('group', null, g.id); }}>
               <span class="tile-top"><${GroupMark} group=${g} size=${30} /><${Badge} n=${g.unread} /></span>
               <span class="tile-name">${g.name}</span>
-              ${v !== 0 && html`<span class="tile-amt">${signed(v)}</span>`}
+              ${v !== 0 && html`<span class="tile-amt">${signed(v, g.cc)}</span>`}
+              ${v !== 0 && approx(v, g.cc, pref) && html`<span class="tile-sub">${approx(v, g.cc, pref)}</span>`}
               ${v === 0 && g.bills.length > 0 && html`<span class="tile-amt">${t('home.even')}</span>`}
               <span class="tile-sub">${g.lastLine || plural('groups.members', g.members.length)}${g.lastMessageAt > 0 ? ' · ' + when(g.lastMessageAt) : ''}</span>
             </button>`;
@@ -544,17 +613,19 @@
 
   // One group: balances, outings and the way into its chat.
   function GroupHome(c) {
+    var cc = currencyOf(c.group);
     var g = c.group;
     var s = useState(false), showAll = s[0], setShowAll = s[1];
     var net = g.net;
-    var plan = Calc.settle(net);
-    var mine = Math.round(net[c.me.id] || 0);
+    var plan = Calc.settle(net, cc.decimals);
+    var mine = Calc.roundTo(net[c.me.id] || 0, cc.decimals);
+    var pref = prefCurrency(c);
     var bills = sortBills(g.bills);
     var shown = showAll ? bills : bills.slice(0, 8);
     // Members, plus anyone else this group's bills still count: guests, and people who left.
     var rows = c.people
-      .filter(function (p) { return (!p.archived && g.memberIds.indexOf(p.id) !== -1) || Math.round(net[p.id] || 0) !== 0; })
-      .map(function (p) { return { p: p, v: Math.round(net[p.id] || 0) }; })
+      .filter(function (p) { return (!p.archived && g.memberIds.indexOf(p.id) !== -1) || Calc.roundTo(net[p.id] || 0, cc.decimals) !== 0; })
+      .map(function (p) { return { p: p, v: Calc.roundTo(net[p.id] || 0, cc.decimals) }; })
       .sort(function (x, y) { return y.v - x.v; });
 
     return html`
@@ -577,7 +648,8 @@
 
       <section class="card hero">
         <p class="muted">${mine > 0 ? t('group.owed') : mine < 0 ? t('group.owe') : t('home.square')}</p>
-        <p class=${'big ' + (mine > 0 ? 'owed' : mine < 0 ? 'owes' : '')}><${CountMoney} n=${mine} /></p>
+        <p class=${'big ' + (mine > 0 ? 'owed' : mine < 0 ? 'owes' : '')}><${CountMoney} n=${mine} cc=${cc} /></p>
+        ${approx(Math.abs(mine), cc, pref) && html`<p class="muted fx">${approx(Math.abs(mine), cc, pref)}</p>`}
         <p class="muted">${plural('home.across', bills.length)}</p>
         ${plan.length > 0 && html`<button class="link-row" onClick=${function () { c.go('settle'); }}>
           <span>${plural('home.settle', plan.length)}</span><${Icon} name="arrow" size=${18} />
@@ -592,7 +664,7 @@
               <${Avatar} person=${r.p} size=${32} />
               <span class="row-main row-title">${whoName(c, r.p.id)}</span>
               <span class="hint">${r.v > 0 ? t('home.isOwed') : r.v < 0 ? t('home.owes') : t('home.even')}</span>
-              <span class=${'amt wide ' + (r.v > 0 ? 'owed' : r.v < 0 ? 'owes' : 'muted')}>${signed(r.v)}</span>
+              <span class=${'amt wide ' + (r.v > 0 ? 'owed' : r.v < 0 ? 'owes' : 'muted')}>${signed(r.v, cc)}</span>
             </div>`;
           })}
         </div>
@@ -603,15 +675,15 @@
         ${bills.length === 0 && html`<p class="empty">${t('home.noOutings')}</p>`}
         <div class="list stagger">
           ${shown.map(function (bill, i) {
-            var sh = Calc.billShares(bill);
+            var sh = Calc.billShares(bill, cc.decimals);
             var there = (bill.presentIds || []).indexOf(c.me.id) !== -1;
             return html`<button class="row tap" key=${bill.id} style=${'--i:' + Math.min(i + 2, 8)} onClick=${function () { c.go('bill', bill.id); }}>
               <span class="row-main">
                 <span class="row-title">${bill.title}</span>
-                <span class="row-sub">${fmtDate(bill.date)} · ${t('home.paid', { name: whoName(c, bill.payerId), amount: money(sh.total) })}</span>
+                <span class="row-sub">${fmtDate(bill.date)} · ${t('home.paid', { name: whoName(c, bill.payerId), amount: money(sh.total, cc) })}</span>
               </span>
               <span class="row-side">
-                <span class="amt">${there ? money(sh.shares[c.me.id] || 0) : '—'}</span>
+                <span class="amt">${there ? money(sh.shares[c.me.id] || 0, cc) : '—'}</span>
                 <span class="row-sub">${there ? t('home.yourShare') : t('home.notThere')}</span>
               </span>
             </button>`;
@@ -629,6 +701,7 @@
   // ---------- add / edit a bill ----------
 
   function Editor(c) {
+    var cc = currencyOf(c.group);
     var draft = c.draft;
     var nn = useState(''), newName = nn[0], setNewName = nn[1];
     var np = useState(''), newPrice = np[0], setNewPrice = np[1];
@@ -642,7 +715,7 @@
     });
     var present = pickable.filter(function (p) { return isHere(p.id); });
     var presentIds = present.map(function (p) { return p.id; });
-    var chk = draftCheck(draft);
+    var chk = draftCheck(draft, cc);
     var bill = chk.bill, sh = chk.sh, problem = chk.problem;
 
     function togglePresent(id) {
@@ -663,7 +736,7 @@
     function addItem(ev) {
       ev.preventDefault();
       var n = newName.trim();
-      var price = Math.round(Calc.num(newPrice));
+      var price = Calc.roundTo(newPrice, cc.decimals);
       if (!n && !price) return;
       upd({ items: draft.items.concat({ id: store.newId(), name: n || t('item.unnamed'), price: String(price), sharerIds: presentIds.slice() }) });
       setNewName('');
@@ -728,8 +801,8 @@
             return html`<div class="item" key=${it.id}>
               <div class="item-top">
                 <input class="plain" aria-label=${t('item.name')} value=${it.name} autocomplete="off" onInput=${function (e) { updItem(it.id, { name: e.target.value }); }} />
-                <span class="cur">NT$</span>
-                <input class="plain price" inputmode="numeric" aria-label=${t('item.price')} value=${it.price} autocomplete="off" onInput=${function (e) { updItem(it.id, { price: e.target.value }); }} />
+                <span class="cur">${cc.symbol}</span>
+                <input class="plain price" inputmode=${cc.decimals ? 'decimal' : 'numeric'} aria-label=${t('item.price')} value=${it.price} autocomplete="off" onInput=${function (e) { updItem(it.id, { price: e.target.value }); }} />
                 <button class="icon-btn bare muted" aria-label=${t('item.remove', { name: it.name })} onClick=${function () { upd({ items: draft.items.filter(function (x) { return x.id !== it.id; }) }); }}><${Icon} name="close" size=${18} /></button>
               </div>
               <div class="pills">
@@ -746,7 +819,7 @@
         </div>
         <form class="add-row" onSubmit=${addItem}>
           <input id="new-item-name" ref=${nameRef} class="field" aria-label=${t('item.name')} placeholder=${t('edit.namePh')} value=${newName} autocomplete="off" onInput=${function (e) { setNewName(e.target.value); }} />
-          <input id="new-item-price" class="field price" inputmode="numeric" aria-label=${t('item.price')} placeholder="NT$" value=${newPrice} autocomplete="off" onInput=${function (e) { setNewPrice(e.target.value); }} />
+          <input id="new-item-price" class="field price" inputmode=${cc.decimals ? 'decimal' : 'numeric'} aria-label=${t('item.price')} placeholder=${cc.symbol} value=${newPrice} autocomplete="off" onInput=${function (e) { setNewPrice(e.target.value); }} />
           <button class="btn small secondary" type="submit">${t('edit.addItem')}</button>
         </form>
         ${c.data.canScan && html`<${FilePick} class="btn dashed" accept=${c.data.scanTypes} onFile=${c.startScan}>
@@ -785,14 +858,14 @@
 
       <section class="card">
         <div class="sum-head">
-          <span class="muted">${[t('edit.sumItems', { amount: money(sh.subtotal) })].concat(extras).join(' + ')}</span>
-          <span class="amt">${money(sh.total)}</span>
+          <span class="muted">${[t('edit.sumItems', { amount: money(sh.subtotal, cc) })].concat(extras).join(' + ')}</span>
+          <span class="amt">${money(sh.total, cc)}</span>
         </div>
         <div class="summary">
           ${present.map(function (p) {
             return html`<div class="sum-cell" key=${p.id}>
               <span class="hint">${p.name}${draft.payerId === p.id ? ' · ' + t('edit.paidTag') : ''}</span>
-              <span class="amt">${money(sh.shares[p.id] || 0)}</span>
+              <span class="amt">${money(sh.shares[p.id] || 0, cc)}</span>
             </div>`;
           })}
         </div>
@@ -817,6 +890,7 @@
   }
 
   function Scan(c) {
+    var cc = currencyOf(c.group);
     var s = useState({ phase: 'reading' }), state = s[0], setState = s[1];
     var a = useState(0), attempt = a[0], setAttempt = a[1];
     var u = useState(''), photoUrl = u[0], setPhotoUrl = u[1];
@@ -832,7 +906,7 @@
       var ctl = new AbortController();
       ctlRef.current = ctl;
       setState({ phase: 'reading' });
-      store.scanReceipt(c.file, ctl.signal).then(function (res) {
+      store.scanReceipt(c.file, ctl.signal, cc).then(function (res) {
         if (ctl.signal.aborted) return;
         setState({
           phase: 'review', title: res.title, servicePct: res.servicePct, taxPct: res.taxPct, total: res.total,
@@ -853,7 +927,7 @@
     function useItems() {
       var draft = c.draft;
       var added = state.items.map(function (it) {
-        return { id: it.id, name: it.name.trim() || t('item.unnamed'), price: String(Math.round(Calc.num(it.price))), sharerIds: draft.presentIds.slice() };
+        return { id: it.id, name: it.name.trim() || t('item.unnamed'), price: String(Calc.roundTo(it.price, cc.decimals)), sharerIds: draft.presentIds.slice() };
       });
       var patch = { items: draft.items.concat(added) };
       if (!draft.title.trim() && state.title) patch.title = state.title;
@@ -885,8 +959,8 @@
         </div>`;
     }
 
-    var itemsSum = state.items.reduce(function (sum, it) { return sum + Math.round(Calc.num(it.price)); }, 0);
-    var withExtras = Math.round(itemsSum * (1 + ((state.servicePct || 0) + (state.taxPct || 0)) / 100));
+    var itemsSum = state.items.reduce(function (sum, it) { return sum + Calc.roundTo(it.price, cc.decimals); }, 0);
+    var withExtras = Calc.roundTo(itemsSum * (1 + ((state.servicePct || 0) + (state.taxPct || 0)) / 100), cc.decimals);
     var mismatch = state.total != null && Math.abs(withExtras - state.total) > 1;
 
     return html`${head}${photo}
@@ -902,8 +976,8 @@
               <div class="item-top">
                 <input class=${'plain' + (it.unsure ? ' flagged' : '')} aria-label=${t('item.name')} value=${it.name} autocomplete="off" onInput=${function (e) { updRow(it.id, { name: e.target.value }); }} />
                 ${it.unsure && html`<span class="tag warn">${t('scan.check')}</span>`}
-                <span class="cur">NT$</span>
-                <input class=${'plain price' + (it.unsure ? ' flagged' : '')} inputmode="numeric" aria-label=${t('item.price')} value=${it.price} autocomplete="off" onInput=${function (e) { updRow(it.id, { price: e.target.value }); }} />
+                <span class="cur">${cc.symbol}</span>
+                <input class=${'plain price' + (it.unsure ? ' flagged' : '')} inputmode=${cc.decimals ? 'decimal' : 'numeric'} aria-label=${t('item.price')} value=${it.price} autocomplete="off" onInput=${function (e) { updRow(it.id, { price: e.target.value }); }} />
                 <button class="icon-btn bare muted" aria-label=${t('item.remove', { name: it.name })} onClick=${function () { setState(Object.assign({}, state, { items: state.items.filter(function (x) { return x.id !== it.id; }) })); }}><${Icon} name="close" size=${18} /></button>
               </div>
             </div>`;
@@ -914,8 +988,8 @@
       </section>
 
       ${state.items.length > 0 && html`<section class="card">
-        <div class="sum-head"><span class="muted">${t('scan.itemsTotal')}</span><span class="amt">${money(withExtras)}</span></div>
-        ${state.total != null && html`<div class="sum-head"><span class="muted">${t('scan.receiptTotal')}</span><span class="amt">${money(state.total)}</span></div>`}
+        <div class="sum-head"><span class="muted">${t('scan.itemsTotal')}</span><span class="amt">${money(withExtras, cc)}</span></div>
+        ${state.total != null && html`<div class="sum-head"><span class="muted">${t('scan.receiptTotal')}</span><span class="amt">${money(state.total, cc)}</span></div>`}
         ${mismatch && html`<p class="warn-text" role="status">${t('scan.mismatch')}</p>`}
       </section>`}
 
@@ -944,7 +1018,7 @@
     function nm(id) { return nameOf(c.byId[id]); }
     // Only the group's members can be on its bills.
     var known = c.group.members.map(function (p) { return '- ' + p.name + (p.mine ? ' (me)' : ''); });
-    var bill = draftToBill(draft);
+    var bill = draftToBill(draft, currencyOf(c.group).decimals);
     var current = {
       title: bill.title,
       date: bill.date,
@@ -1019,6 +1093,7 @@
   }
 
   function Assistant(c) {
+    var cc = currencyOf(c.group);
     var draft = c.draft;
     var tx = useState(''), text = tx[0], setText = tx[1];
     var ph = useState(null), photo = ph[0], setPhoto = ph[1];
@@ -1048,7 +1123,7 @@
       var ctl = new AbortController();
       ctlRef.current = ctl;
       store.askAssistant({
-        history: history, context: aiContext(c, draft), message: msg, file: file, signal: ctl.signal
+        history: history, currency: cc, context: aiContext(c, draft), message: msg, file: file, signal: ctl.signal
       }).then(function (res) {
         if (ctl.signal.aborted) return;
         var now = latest.current;
@@ -1077,7 +1152,7 @@
     // On a phone the camera button opens the camera itself and a second button
     // picks an existing picture; a computer has only the file picker.
     var touch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
-    var chk = draftCheck(draft);
+    var chk = draftCheck(draft, cc);
     var sh = chk.sh;
     var hasBill = chk.realItems.length > 0;
     var present = c.people.filter(function (p) { return draft.presentIds.indexOf(p.id) !== -1; });
@@ -1118,9 +1193,9 @@
         ${hasBill && html`<section class="card">
           <div class="sum-head">
             <h2 class="eyebrow">${t('ai.soFar')}</h2>
-            <span class="amt">${money(sh.total)}</span>
+            <span class="amt">${money(sh.total, cc)}</span>
           </div>
-          ${!draft.payerAssumed && html`<p class="muted small">${[t('home.paid', { name: whoName(c, draft.payerId), amount: money(sh.total) })].concat(extras).join(' · ')}</p>`}
+          ${!draft.payerAssumed && html`<p class="muted small">${[t('home.paid', { name: whoName(c, draft.payerId), amount: money(sh.total, cc) })].concat(extras).join(' · ')}</p>`}
           ${draft.payerAssumed && extras.length > 0 && html`<p class="muted small">${extras.join(' · ')}</p>`}
           ${draft.payerAssumed && html`<div class="section">
             <p class="warn-text">${t('ai.whoPaid')}</p>
@@ -1138,7 +1213,7 @@
                   <span class=${'ai-name' + (it.unsure ? ' owes' : '')}>${it.name}${it.unsure && html` <span class="tag warn">${t('scan.check')}</span>`}</span>
                   <span class=${'row-sub wrap' + (nobody ? ' owes' : '')}>${sharedBy(it)}</span>
                 </span>
-                <span class="amt">${money(Calc.num(it.price))}</span>
+                <span class="amt">${money(Calc.num(it.price), cc)}</span>
               </div>`;
             })}
           </div>
@@ -1146,7 +1221,7 @@
             ${present.map(function (p) {
               return html`<div class="sum-cell" key=${p.id}>
                 <span class="hint">${p.name}${!draft.payerAssumed && draft.payerId === p.id ? ' · ' + t('edit.paidTag') : ''}</span>
-                <span class="amt">${money(sh.shares[p.id] || 0)}</span>
+                <span class="amt">${money(sh.shares[p.id] || 0, cc)}</span>
               </div>`;
             })}
           </div>
@@ -1182,27 +1257,28 @@
 
   // ---------- one bill ----------
 
-  function billText(bill, sh, byId) {
+  function billText(bill, sh, byId, cc) {
     var extras = extrasList(bill);
     var lines = [bill.title + ' · ' + bill.date];
     lines.push(
-      t('home.paid', { name: nameOf(byId[bill.payerId]), amount: money(sh.total) }) +
+      t('home.paid', { name: nameOf(byId[bill.payerId]), amount: money(sh.total, cc) }) +
       (extras.length ? ' (' + t('bill.includes', { list: extras.join(' + ') }) + ')' : '')
     );
     (bill.presentIds || []).forEach(function (id) {
       if (id === bill.payerId) return;
-      lines.push(t('copy.owes', { name: nameOf(byId[id]), amount: money(sh.shares[id] || 0) }));
+      lines.push(t('copy.owes', { name: nameOf(byId[id]), amount: money(sh.shares[id] || 0, cc) }));
     });
     return lines.join('\n');
   }
 
   function Detail(c) {
+    var cc = currencyOf(c.group);
     var k = useState(false), confirming = k[0], setConfirming = k[1];
     var bill = c.data.bills.filter(function (b) { return b.id === c.id; })[0] ||
       (c.lastSaved && c.lastSaved.id === c.id ? c.lastSaved : null);
     if (!bill) return html`<${Head} onBack=${function () { c.go('group'); }} title=${t('bill.missing')} />`;
 
-    var sh = Calc.billShares(bill);
+    var sh = Calc.billShares(bill, cc.decimals);
     var payerName = whoName(c, bill.payerId);
     var iPaid = bill.payerId === c.me.id;
     var present = bill.presentIds || [];
@@ -1215,13 +1291,14 @@
       var names = (bill.items || []).filter(function (it) { return ids.indexOf(it.id) !== -1; }).map(function (it) { return it.name; });
       return names.length ? names.join(sep) : t('bill.nothing');
     }
+    var pref = prefCurrency(c);
     var there = present.indexOf(c.me.id) !== -1;
-    var mine = Math.round(sh.shares[c.me.id] || 0);
+    var mine = Calc.roundTo(sh.shares[c.me.id] || 0, cc.decimals);
     function shareToGroup() {
-      var payments = owers.map(function (id) { return { fromId: id, toId: bill.payerId, amount: Math.round(sh.shares[id] || 0) }; })
+      var payments = owers.map(function (id) { return { fromId: id, toId: bill.payerId, amount: Calc.roundTo(sh.shares[id] || 0, cc.decimals) }; })
         .filter(function (x) { return x.amount > 0; });
       var cd = { kind: 'bill', groupId: c.group.id, billId: bill.id, title: bill.title, payments: payments };
-      store.sendMessage(c.group.id, c.me.id, billText(bill, sh, c.byId), cd).catch(function () { c.say(t('chat.failed')); });
+      store.sendMessage(c.group.id, c.me.id, billText(bill, sh, c.byId, cc), cd).catch(function () { c.say(t('chat.failed')); });
       c.say(t('share.sentGroup'));
     }
     function row(id, isPayer) {
@@ -1232,7 +1309,7 @@
           <span class="row-title">${whoName(c, id)}${isPayer && html`<span class="hint"> · ${t('bill.ownShare')}</span>`}</span>
           <span class="row-sub wrap">${ate(id)}</span>
         </span>
-        <span class=${'amt ' + (isPayer ? 'muted' : 'owes')}>${money(sh.shares[id] || 0)}</span>
+        <span class=${'amt ' + (isPayer ? 'muted' : 'owes')}>${money(sh.shares[id] || 0, cc)}</span>
       </div>`;
     }
 
@@ -1245,9 +1322,10 @@
       />
 
       <section class="card hero">
-        <p class="muted">${[t('home.paid', { name: payerName, amount: money(sh.total) }), plural('bill.items', (bill.items || []).length)].concat(extras.length ? [t('bill.includes', { list: extras.join(' + ') })] : []).join(' · ')}</p>
+        <p class="muted">${[t('home.paid', { name: payerName, amount: money(sh.total, cc) }), plural('bill.items', (bill.items || []).length)].concat(extras.length ? [t('bill.includes', { list: extras.join(' + ') })] : []).join(' · ')}</p>
         <p class="muted">${iPaid && back > 0 ? t('bill.youGetBack') : !iPaid && there ? t('bill.yourShare') : t('bill.total')}</p>
-        <p class=${'big' + (iPaid && back > 0 ? ' owed' : '')}><${CountMoney} n=${iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total} /></p>
+        <p class=${'big' + (iPaid && back > 0 ? ' owed' : '')}><${CountMoney} n=${iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total} cc=${cc} /></p>
+        ${approx(iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total, cc, pref) && html`<p class="muted fx">${approx(iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total, cc, pref)}</p>`}
       </section>
 
       <section class="section grow">
@@ -1260,9 +1338,9 @@
 
       <div class="stack">
         ${!c.data.guest && html`<button class="btn" onClick=${shareToGroup}><${Icon} name="chat" />${t('bill.shareGroup')}</button>`}
-        ${c.data.guest && html`<button class="btn" onClick=${function () { c.line(billText(bill, sh, c.byId)); }}><${Icon} name="send" />${t('bill.copy')}</button>`}
+        ${c.data.guest && html`<button class="btn" onClick=${function () { c.line(billText(bill, sh, c.byId, cc)); }}><${Icon} name="send" />${t('bill.copy')}</button>`}
         ${!confirming && html`<p class="links">
-          ${!c.data.guest && html`<button class="link quiet" onClick=${function () { c.line(billText(bill, sh, c.byId)); }}>${t('bill.copy')}</button><span aria-hidden="true">·</span>`}
+          ${!c.data.guest && html`<button class="link quiet" onClick=${function () { c.line(billText(bill, sh, c.byId, cc)); }}>${t('bill.copy')}</button><span aria-hidden="true">·</span>`}
           <button class="link danger" onClick=${function () { setConfirming(true); }}>${t('bill.delete')}</button>
         </p>`}
         ${confirming && html`<${Confirm} text=${t('bill.deleteAsk')} label=${t('common.delete')}
@@ -1274,9 +1352,10 @@
   // ---------- settle up ----------
 
   function Settle(c) {
+    var cc = currencyOf(c.group);
     var ak = useState(null), asking = ak[0], setAsking = ak[1]; // the payment a reminder is being sent for
     var inApp = !c.data.guest; // guests have no chat: LINE is their only way
-    var plan = Calc.settle(c.group.net);
+    var plan = Calc.settle(c.group.net, cc.decimals);
     var recent = c.group.payments.slice().sort(function (x, y) { return (y.createdAt || 0) - (x.createdAt || 0); }).slice(0, 5);
     var group = c.group.name;
 
@@ -1289,10 +1368,10 @@
       c.say(t('settle.marked'));
     }
     function reminder(p) {
-      return t('settle.reminder', { from: nameOf(c.byId[p.fromId]), to: nameOf(c.byId[p.toId]), amount: money(p.amount) });
+      return t('settle.reminder', { from: nameOf(c.byId[p.fromId]), to: nameOf(c.byId[p.toId]), amount: money(p.amount, cc) });
     }
     function card(kind, list) {
-      return { kind: kind, groupId: c.group.id, payments: list.map(function (x) { return { fromId: x.fromId, toId: x.toId, amount: Math.round(x.amount) }; }) };
+      return { kind: kind, groupId: c.group.id, payments: list.map(function (x) { return { fromId: x.fromId, toId: x.toId, amount: Calc.roundTo(x.amount, cc.decimals) }; }) };
     }
     function toGroup(text, cd) {
       store.sendMessage(c.group.id, c.me.id, text, cd).catch(function () { c.say(t('chat.failed')); });
@@ -1304,7 +1383,7 @@
     }
     function planText() {
       return [group + ' · ' + t('settle.title')].concat(plan.map(function (p) {
-        return nameOf(c.byId[p.fromId]) + ' → ' + nameOf(c.byId[p.toId]) + ' ' + money(p.amount);
+        return nameOf(c.byId[p.fromId]) + ' → ' + nameOf(c.byId[p.toId]) + ' ' + money(p.amount, cc);
       })).join('\n');
     }
 
@@ -1330,7 +1409,7 @@
               <span class="pay-arrow" role="img" aria-label=${t('settle.pays')}><${Icon} name="arrow" size=${18} /></span>
               <${Avatar} person=${to} size=${32} />
               <span class="row-title row-main">${whoName(c, p.toId)}</span>
-              <span class=${'amt ' + (p.toId === c.me.id ? 'owed' : p.fromId === c.me.id ? 'owes' : '')}>${money(p.amount)}</span>
+              <span class=${'amt ' + (p.toId === c.me.id ? 'owed' : p.fromId === c.me.id ? 'owes' : '')}>${money(p.amount, cc)}</span>
             </div>
             <div class="pay-actions">
               ${p.fromId !== c.me.id && html`<button class="btn small ghost" onClick=${function () { if (inApp) setAsking(p); else c.line(reminder(p)); }}>${inApp ? t('settle.remind') : t('settle.copyReminder')}</button>`}
@@ -1349,7 +1428,7 @@
                 <span class="row-title">${t('settle.paidLine', { from: whoName(c, p.fromId), to: whoName(c, p.toId, true) })}</span>
                 <span class="row-sub">${fmtDate(p.date)}</span>
               </span>
-              <span class="amt">${money(p.amount)}</span>
+              <span class="amt">${money(p.amount, cc)}</span>
               <button class="btn small ghost" onClick=${function () { store.remove('payments', p.id); }}>${t('settle.undo')}</button>
             </div>`;
           })}
@@ -1381,6 +1460,7 @@
   // changes. names: show who wrote each message (groups; not a two-person chat).
   // openedAt: when the chat was opened; messages newer than that pop in.
   function chatRows(c, timeline, names, openedAt) {
+    var cc = currencyOf(c.group);
     var rows = [];
     var lastDay = '';
     timeline.forEach(function (entry) {
@@ -1393,7 +1473,7 @@
         var bill = entry.bill;
         rows.push(html`<button class="banner event" key=${entry.key} onClick=${function () { c.go('bill', bill.id); }}>
           <${Icon} name="receipt" size=${18} />
-          <span class="row-main">${t('chat.billAdded', { name: whoName(c, bill.payerId), amount: money(Calc.billShares(bill).total), title: bill.title })}</span>
+          <span class="row-main">${t('chat.billAdded', { name: whoName(c, bill.payerId), amount: money(Calc.billShares(bill, cc.decimals).total, cc), title: bill.title })}</span>
           <span class="link-text">${t('chat.view')}</span>
         </button>`);
         return;
@@ -1423,10 +1503,11 @@
   function ChatCard(p) {
     var c = p.c, card = p.card;
     var g = c.groups.filter(function (x) { return x.id === card.groupId; })[0];
+    var cc = currencyOf(g);
     return html`<div class=${'chat-card' + (p.mine ? ' me' : '') + (p.fresh ? ' new' : '')}>
       <p class="chat-card-title"><${Icon} name=${card.kind === 'bill' ? 'receipt' : 'bell'} size=${16} />${cardTitle(card, c.groups)}</p>
       ${(card.payments || []).map(function (x, i) {
-        return html`<p class="chat-card-line" key=${i}><span>${whoName(c, x.fromId)} → ${whoName(c, x.toId, true)}</span><span class="amt">${money(x.amount)}</span></p>`;
+        return html`<p class="chat-card-line" key=${i}><span>${whoName(c, x.fromId)} → ${whoName(c, x.toId, true)}</span><span class="amt">${money(x.amount, cc)}</span></p>`;
       })}
       ${g && card.kind === 'bill' && html`<button class="btn small" onClick=${function () { c.go('bill', card.billId, g.id); }}>${t('card.openBill')}</button>`}
       ${g && card.kind !== 'bill' && html`<button class="btn small" onClick=${function () { c.go('settle', null, g.id); }}>${t('card.openSettle')}</button>`}
@@ -1527,6 +1608,7 @@
     var ns = useState([]), names = ns[0], setNames = ns[1];
     var ty = useState(''), typed = ty[0], setTyped = ty[1];
     var ic = useState(null), icon = ic[0], setIcon = ic[1];
+    var cu = useState(prefCurrency(c).code), cur = cu[0], setCur = cu[1];
     var preset = c.allGroups.length % COLORS.length;
 
     function toggle(id) {
@@ -1542,7 +1624,7 @@
         return id;
       });
       store.put('groups', gid, Object.assign({
-        name: clean, ownerId: c.me.id, memberIds: [c.me.id].concat(ids), preset: preset, createdAt: Date.now()
+        name: clean, ownerId: c.me.id, memberIds: [c.me.id].concat(ids), preset: preset, currency: cur, createdAt: Date.now()
       }, icon ? { icon: icon } : {}));
       c.go('group', null, gid);
     }
@@ -1552,7 +1634,7 @@
       var gid = store.newId();
       if (c.data.guest) { createAsGuest(clean, gid); return; }
       store.put('groups', gid, Object.assign({
-        name: clean, ownerId: c.me.id, memberIds: [c.me.id], preset: preset, createdAt: Date.now()
+        name: clean, ownerId: c.me.id, memberIds: [c.me.id], preset: preset, currency: cur, createdAt: Date.now()
       }, icon ? { icon: icon } : {})).then(function () {
         return Promise.all(picked.map(function (uid) { return store.inviteToGroup(gid, uid); }));
       }).catch(function () { c.say(t('app.saveFailed')); });
@@ -1571,6 +1653,11 @@
       <section class="section">
         <h2 class="eyebrow">${t('groupIcon.label')}</h2>
         <${IconPicker} value=${icon} color=${COLORS[preset]} onPick=${setIcon} />
+      </section>
+
+      <section class="section">
+        <label class="eyebrow" for="new-group-currency">${t('group.currency')}</label>
+        <${CurrencySelect} id="new-group-currency" value=${cur} onChange=${setCur} />
       </section>
 
       ${c.data.guest && html`<section class="section">
@@ -1617,6 +1704,7 @@
   }
 
   function Members(c) {
+    var cc = currencyOf(c.group);
     var g = c.group;
     var owner = c.byId[g.ownerId];
     var admin = g.ownerId === c.me.id;
@@ -1668,10 +1756,10 @@
     }
 
     function owedLine(person) {
-      var v = Math.round(g.net[person.id] || 0);
+      var v = Calc.roundTo(g.net[person.id] || 0, cc.decimals);
       var who = person.mine ? 'members.you' : 'members.they';
-      if (v < 0) return t(who + 'Owe', { name: person.name, amount: money(-v) });
-      if (v > 0) return t(who + 'AreOwed', { name: person.name, amount: money(v) });
+      if (v < 0) return t(who + 'Owe', { name: person.name, amount: money(-v, cc) });
+      if (v > 0) return t(who + 'AreOwed', { name: person.name, amount: money(v, cc) });
       return '';
     }
     function confirmBox(text, extra, label, act) {
@@ -1692,6 +1780,12 @@
       ${admin && html`<section class="section">
         <h2 class="eyebrow">${t('groupIcon.label')}</h2>
         <${IconPicker} value=${groupIcon(g)} color=${groupColor(g)} onPick=${function (v) { saveGroup(g, { icon: v }).catch(function () { c.say(t('app.saveFailed')); }); }} />
+      </section>`}
+
+      ${admin && html`<section class="section">
+        <label class="eyebrow" for="group-currency">${t('group.currency')}</label>
+        <${CurrencySelect} id="group-currency" value=${cc.code} onChange=${function (v) { saveGroup(g, { currency: v }).catch(function () { c.say(t('app.saveFailed')); }); }} />
+        ${g.bills.length > 0 && html`<p class="muted small">${t('group.currencyNote')}</p>`}
       </section>`}
 
       <section class="section">
@@ -1916,13 +2010,16 @@
   function SettleAll(c) {
     var pay = [], get = [];
     c.groups.forEach(function (g) {
-      Calc.settle(g.net).forEach(function (p) {
+      Calc.settle(g.net, currencyOf(g).decimals).forEach(function (p) {
         if (p.fromId === c.me.id) pay.push({ g: g, p: p, other: c.byId[p.toId] });
         else if (p.toId === c.me.id) get.push({ g: g, p: p, other: c.byId[p.fromId] });
       });
     });
-    function sum(list) { return list.reduce(function (s, x) { return s + x.p.amount; }, 0); }
-    var net = sum(get) - sum(pay);
+    // Totals in the viewer's currency; other groups' amounts converted at today's rate.
+    var pref = prefCurrency(c);
+    function sum(list) { return totalIn(list.map(function (x) { return { cc: currencyOf(x.g), v: x.p.amount }; }), pref); }
+    var tGet = sum(get), tPay = sum(pay);
+    var net = Calc.roundTo(tGet.amount - tPay.amount, pref.decimals);
     function rows(list, owed) {
       return html`<div class="list stagger">
         ${list.map(function (x, i) {
@@ -1932,7 +2029,7 @@
               <span class="row-title">${nameOf(x.other)}</span>
               <span class="row-sub">${x.g.name}</span>
             </span>
-            <span class=${'amt ' + (owed ? 'owed' : 'owes')}>${money(x.p.amount)}</span>
+            <span class=${'amt ' + (owed ? 'owed' : 'owes')}>${money(x.p.amount, currencyOf(x.g))}</span>
             <${Icon} name="arrow" size=${16} />
           </button>`;
         })}
@@ -1943,8 +2040,10 @@
       <${Head} title=${t('settle.title')} />
       <section class="card hero">
         <p class="muted">${net > 0 ? t('home.owed') : net < 0 ? t('home.owe') : t('home.square')}</p>
-        <p class="big"><${CountMoney} n=${net} /></p>
-        ${(pay.length > 0 || get.length > 0) && html`<p class="muted">${t('settleAll.summary', { get: money(sum(get)), pay: money(sum(pay)) })}</p>`}
+        <p class="big"><${CountMoney} n=${net} cc=${pref} /></p>
+        ${(pay.length > 0 || get.length > 0) && html`<p class="muted">${t('settleAll.summary', { get: money(tGet.amount, pref), pay: money(tPay.amount, pref) })}</p>`}
+        ${(tGet.approx || tPay.approx) && html`<p class="muted fx">${t('fx.note')}</p>`}
+        ${tGet.apart.concat(tPay.apart.map(function (x) { return { cc: x.cc, v: -x.v }; })).map(function (x, i) { return html`<p class="muted fx" key=${i}>${t('fx.apart', { amount: signed(x.v, x.cc) })}</p>`; })}
       </section>
       ${!pay.length && !get.length && html`<p class="empty">${t('settleAll.none')}</p>`}
       ${pay.length > 0 && html`<section class="section">
@@ -1975,6 +2074,12 @@
         </div>
       </section>
 
+      <section class="section">
+        <label class="eyebrow" for="me-currency">${t('me.currency')}</label>
+        <${CurrencySelect} id="me-currency" value=${prefCurrency(c).code} onChange=${function (v) { store.saveSettings({ currency: v }); }} />
+        <p class="muted small">${t('me.currencyNote')}</p>
+      </section>
+
       ${c.data.guest && html`<div class="stack grow-top">
         <p class="muted small">${t('guest.meNote')}</p>
         <button class="btn" onClick=${function () { c.go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
@@ -1991,8 +2096,6 @@
       </div>`}`;
   }
 
-  // Floating bar along the bottom of the four main screens. Groups carries the
-  // count of unread chat messages across all groups.
   // How deep each screen sits: going deeper slides in from the right, going
   // back from the left, and screens at the same depth (the tabs) fade.
   var DEPTH = {
@@ -2007,6 +2110,8 @@
     return b > a ? 'in-fwd' : b < a ? 'in-back' : 'in-tab';
   }
 
+  // Floating bar along the bottom of the four main screens. Groups carries the
+  // count of unread chat messages across all groups.
   var TABS = [
     { name: 'home', icon: 'chat', label: 'tabs.groups' },
     { name: 'settleAll', icon: 'swap', label: 'tabs.settle' },
@@ -2220,11 +2325,12 @@
     var unread = me && me.dm ? me.dm.unread : 0;
     // What the two of them owe each other in a group's settle-up plan: + they owe the viewer.
     function between(g) {
-      return Math.round(Calc.settle(g.net).reduce(function (v, x) {
+      var cc = currencyOf(g);
+      return Calc.roundTo(Calc.settle(g.net, cc.decimals).reduce(function (v, x) {
         if (x.fromId === p.id && x.toId === c.me.id) return v + x.amount;
         if (x.fromId === c.me.id && x.toId === p.id) return v - x.amount;
         return v;
-      }, 0));
+      }, 0), cc.decimals);
     }
     function unfriend() {
       store.removeFriend(p.id).catch(function () { c.say(t('app.saveFailed')); });
@@ -2251,7 +2357,7 @@
               <${GroupAvatar} group=${g} size=${40} />
               <span class="row-main">
                 <span class="row-title">${g.name}</span>
-                <span class=${'row-sub' + (v > 0 ? ' owed' : v < 0 ? ' owes' : '')}>${v > 0 ? t('person.owesYou', { name: p.name, amount: money(v) }) : v < 0 ? t('person.youOwe', { name: p.name, amount: money(-v) }) : t('person.even')}</span>
+                <span class=${'row-sub' + (v > 0 ? ' owed' : v < 0 ? ' owes' : '')}>${v > 0 ? t('person.owesYou', { name: p.name, amount: money(v, currencyOf(g)) }) : v < 0 ? t('person.youOwe', { name: p.name, amount: money(-v, currencyOf(g)) }) : t('person.even')}</span>
               </span>
               <${Icon} name="chevron" size=${18} />
             </button>`;
@@ -2390,7 +2496,8 @@
         bills: bills,
         payments: payments,
         messages: messages,
-        net: Calc.balances(bills, payments),
+        cc: currencyOf(g),
+        net: Calc.balances(bills, payments, currencyOf(g).decimals),
         unread: me ? messages.filter(function (m) { return m.at > (data.chatRead[g.id] || 0) && m.personId !== me.id; }).length : 0,
         lastLine: lastLine,
         lastMessageAt: last ? last.at || 0 : 0,

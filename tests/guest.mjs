@@ -32,6 +32,8 @@ const browser = await chromium.launch();
 const errors = [];
 const ctx = await browser.newContext(phone);
 const shared = [];
+// Exchange rates: a fixed answer (1 US$ = NT$32), so the converted amounts are known.
+await ctx.route('**/currencies/usd.min.json', (route) => route.fulfill({ json: { date: '2026-10-24', usd: { usd: 1, twd: 32, jpy: 150 } } }));
 await ctx.route('https://line.me/**', (route) => { shared.push(new URL(route.request().url()).searchParams.get('text') || ''); route.fulfill({ body: 'LINE' }); });
 const page = await ctx.newPage();
 page.on('pageerror', (e) => errors.push(e.message));
@@ -119,6 +121,36 @@ try {
   for (let k = 1; k <= 8; k++) await page.mouse.move(from.x + from.width / 2 + (to.x - from.x) * k / 8, from.y + from.height / 2);
   await page.mouse.up();
   check(await seen(page, 'Sign in to add friends'), 'sliding along the tab bar to Friends opens it, and Friends asks to sign in');
+
+  // 9b. A group in US dollars: cents in shares and settling, and totals converted.
+  await tab(page, 'Groups');
+  await button(page, 'New group').click();
+  await page.fill('#new-group-name', 'NYC trip');
+  await page.selectOption('#new-group-currency', 'USD');
+  for (const n of ['Ava', 'Ben']) { await page.fill('#add-name', n); await button(page, 'Add').click(); }
+  await button(page, 'Create group').click();
+  await button(page, 'Add a bill').click();
+  await page.fill('#bill-title', 'Pizza');
+  await page.fill('#new-item-name', 'Pizza');
+  await page.fill('#new-item-price', '10');
+  await button(page, 'Add').click();
+  await button(page, 'Save bill').click();
+  check(await seen(page, 'US$3.33') && await seen(page, 'US$3.34'), 'US$10.00 three ways shows US$3.33, US$3.33 and US$3.34');
+  check(await seen(page, '6.66'), 'the guest gets back US$6.66');
+  await shot(page, 'g05b-usd-bill');
+  await button(page, 'Back').click();
+  await page.getByRole('button', { name: /Settle up/ }).first().click();
+  check(await seen(page, 'US$3.33'), 'Settle up shows cents');
+  await tab(page, 'Groups');
+  check(await seen(page, "Converted at today's rate"), 'the Home total converts the US$ group into NT$');
+  check(await seen(page, '≈ NT$213'), 'the US$ tile shows about NT$213 (US$6.66 × 32)');
+  await shot(page, 'g05c-converted');
+  await tab(page, 'Me');
+  await page.selectOption('#me-currency', 'USD');
+  await tab(page, 'Groups');
+  check(await seen(page, '≈ US$'), 'with totals in US$, the NT$ group shows its amount in US$');
+  await tab(page, 'Me');
+  await page.selectOption('#me-currency', 'TWD');
   await shot(page, 'g05-friends');
 
   // 10. Me: the note, and back to the welcome screen with the groups kept.
