@@ -50,6 +50,9 @@ try {
   await clearEmulators();
   const errors = [];
   const ownerCtx = await browser.newContext(phone);
+  // LINE's share page is caught here instead of being opened.
+  const shared = [];
+  await ownerCtx.route('https://line.me/**', (route) => { shared.push(new URL(route.request().url()).searchParams.get('text') || ''); route.fulfill({ body: 'LINE' }); });
   const owner = await ownerCtx.newPage();
   pages.push(owner);
   owner.on('pageerror', (e) => errors.push('owner: ' + e.message));
@@ -81,6 +84,9 @@ try {
   await owner.waitForTimeout(800);
   const groupSettle = await owner.locator('main').innerText();
   check(['964', '476', '152'].every((n) => groupSettle.includes(n)), "the group's Settle up shows 964 / 476 / 152");
+  await owner.getByRole('button', { name: 'Send the plan in LINE' }).click();
+  await owner.waitForTimeout(1500);
+  check(shared.length === 1 && ['964', '476', '152'].every((n) => shared[0].includes(n)), 'Send the plan in LINE opens LINE with the plan written');
   await openGroup(owner);
   await owner.getByText('Hotpot night').first().click();
   await owner.waitForTimeout(500);
@@ -101,6 +107,9 @@ try {
   const link = await owner.inputValue('#invite-link');
   check(/^http:\/\/localhost:8765\/\?openExternalBrowser=1#join=[0-9a-f]{36}$/.test(link), 'invite link is made: ' + link.replace(/join=.*/, 'join=…'));
   await shot(owner, '04-invite');
+  await owner.getByRole('button', { name: 'Send the invite in LINE' }).click();
+  await owner.waitForTimeout(1500);
+  check(shared.length === 2 && shared[1].includes(link), 'Send the invite in LINE opens LINE with the invite link in the message');
 
   // 5. A friend opens the link, signs in, picks her name and chats.
   const friendCtx = await browser.newContext(phone);

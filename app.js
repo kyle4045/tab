@@ -1339,7 +1339,7 @@
       </div>
 
       <div class="stack">
-        <button class="btn" onClick=${function () { c.copy(billText(bill, sh, c.byId)); }}><${Icon} name="copy" />${t('bill.copy')}</button>
+        <button class="btn" onClick=${function () { c.line(billText(bill, sh, c.byId)); }}><${Icon} name="send" />${t('bill.copy')}</button>
         ${!confirming && html`<button class="btn ghost danger" onClick=${function () { setConfirming(true); }}><${Icon} name="trash" size=${18} />${t('bill.delete')}</button>`}
         ${confirming && html`<${Confirm} text=${t('bill.deleteAsk')} label=${t('common.delete')}
           onCancel=${function () { setConfirming(false); }}
@@ -1393,7 +1393,7 @@
               <span class=${'amt ' + (p.toId === c.me.id ? 'owed' : p.fromId === c.me.id ? 'owes' : '')}>${money(p.amount)}</span>
             </div>
             <div class="pay-actions">
-              <button class="btn small ghost" onClick=${function () { c.copy(t('settle.reminder', { from: nameOf(from), to: nameOf(to), amount: money(p.amount) })); }}>${t('settle.copyReminder')}</button>
+              <button class="btn small ghost" onClick=${function () { c.line(t('settle.reminder', { from: nameOf(from), to: nameOf(to), amount: money(p.amount) })); }}>${t('settle.copyReminder')}</button>
               <button class="btn small secondary" onClick=${function () { markPaid(p); }}>${t('settle.markPaid')}</button>
             </div>
           </div>`;
@@ -1416,7 +1416,7 @@
         </div>
       </section>`}
 
-      ${plan.length > 0 && html`<button class="btn" onClick=${function () { c.copy(planText()); }}><${Icon} name="copy" />${t('settle.copyPlan')}</button>`}`;
+      ${plan.length > 0 && html`<button class="btn" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>`}`;
   }
 
   // ---------- group chat ----------
@@ -1909,7 +1909,7 @@
 
       ${group && html`<div class="stack grow-top">
         <p class="muted small">${t('invite.expiry')}</p>
-        <button class="btn" disabled=${!link} onClick=${function () { c.copy(t('invite.msg', { group: group.name, link: link })); }}><${Icon} name="copy" />${t('invite.copyMsg')}</button>
+        <button class="btn" disabled=${!link} onClick=${function () { c.line(t('invite.msg', { group: group.name, link: link })); }}><${Icon} name="send" />${t('invite.copyMsg')}</button>
       </div>`}`;
   }
 
@@ -2110,6 +2110,14 @@
       function manual() { setCopyText(text); }
       try { navigator.clipboard.writeText(text).then(ok, manual); } catch (e) { manual(); }
     }
+    // Opens LINE's own share screen with the message written; the viewer picks
+    // the chat and sends it. Where nothing opens (a pop-up blocker), it falls
+    // back to copying.
+    function line(text) {
+      var w = window.open('https://line.me/R/share?text=' + encodeURIComponent(text), '_blank');
+      if (!w) { copy(text); return; }
+      try { w.opener = null; } catch (e) { /* the new page is already on its own */ }
+    }
 
     function resetChat() {
       chat.forEach(function (m) { if (m.photoUrl) URL.revokeObjectURL(m.photoUrl); });
@@ -2117,7 +2125,7 @@
     }
 
     var c = {
-      data: data, people: people, byId: byId, me: me, lang: lang, go: go, copy: copy, say: setToast,
+      data: data, people: people, byId: byId, me: me, lang: lang, go: go, copy: copy, line: line, say: setToast,
       groups: groups, allGroups: allGroups, group: group, from: route.from || null,
       draft: draft, setDraft: setDraft, lastSaved: lastSaved, chat: chat, setChat: setChat,
       startNew: function () { resetChat(); setDraft(newDraft({ group: group, me: me })); go('edit'); },
