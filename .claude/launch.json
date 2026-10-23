@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tab-preview",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "dev/serve.ps1", "-Port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "firebase-emulators",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "dev/emulators.ps1"],
+      "port": 9099
+    }
+  ]
+}

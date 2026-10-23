@@ -1,0 +1,16 @@
+# Private values for the AI proxy (copy proxy/Secrets.example.gs)
+proxy/Secrets.gs
+proxy/Secrets.js
+# clasp project link and login
+.clasp.json
+.clasprc.json
+proxy/.clasp.json
+
+# Local tools and logs
+node_modules/
+*.log
+.firebase/
+.env
+.env.*
+# Claude Code local settings
+.claude/settings.local.json
