@@ -310,9 +310,34 @@
     </div>`;
   }
 
+  // Keyed by its number, so a new count pops in (app.css, .badge).
   function Badge(p) {
     if (!p.n) return null;
-    return html`<span class="badge inline" aria-label=${plural('groups.unread', p.n)}>${p.n > 9 ? '9+' : p.n}</span>`;
+    return html`<span key=${p.n} class="badge inline" aria-label=${plural('groups.unread', p.n)}>${p.n > 9 ? '9+' : p.n}</span>`;
+  }
+
+  // A headline amount that counts up to its value when it first shows.
+  function CountMoney(p) {
+    var v = useCountUp(Math.round(Math.abs(p.n)), 700);
+    return html`<${BigMoney} n=${v} />`;
+  }
+
+  // A sheet that springs up from the bottom over a dimmed page and sinks away
+  // before it goes. render(close) draws its contents; close() animates it out,
+  // then calls onClose. Tapping the dimmed page closes it too.
+  function Sheet(p) {
+    var cl = useState(false), closing = cl[0], setClosing = cl[1];
+    var timer = useRef(null);
+    useEffect(function () { return function () { clearTimeout(timer.current); }; }, []);
+    function close() {
+      if (closing) return;
+      setClosing(true);
+      timer.current = setTimeout(p.onClose, reducedMotion() ? 0 : 200);
+    }
+    return html`<div class=${'sheet' + (closing ? ' closing' : '')} role="dialog" aria-label=${p.label}
+      onClick=${function (e) { if (e.target === e.currentTarget) close(); }}>
+      <div class="sheet-card">${p.render(close)}</div>
+    </div>`;
   }
 
   function Head(p) {
@@ -501,10 +526,10 @@
           <p class="muted">${t('groups.none')}</p>
           <button class="btn" onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" weight=${2.5} />${t('groups.new')}</button>
         </div>`}
-        ${c.groups.length > 0 && html`<div class="tiles">
-          ${c.groups.map(function (g) {
+        ${c.groups.length > 0 && html`<div class="tiles stagger">
+          ${c.groups.map(function (g, i) {
             var v = Math.round(g.net[c.me.id] || 0);
-            return html`<button class="tile" key=${g.id} style=${'background:' + groupColor(g)} onClick=${function () { c.go('group', null, g.id); }}>
+            return html`<button class="tile" key=${g.id} style=${'background:' + groupColor(g) + ';--i:' + Math.min(i, 8)} onClick=${function () { c.go('group', null, g.id); }}>
               <span class="tile-top"><${GroupMark} group=${g} size=${30} /><${Badge} n=${g.unread} /></span>
               <span class="tile-name">${g.name}</span>
               ${v !== 0 && html`<span class="tile-amt">${signed(v)}</span>`}
@@ -512,7 +537,7 @@
               <span class="tile-sub">${g.lastLine || plural('groups.members', g.members.length)}${g.lastMessageAt > 0 ? ' · ' + when(g.lastMessageAt) : ''}</span>
             </button>`;
           })}
-          <button class="tile add" onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" size=${24} weight=${2} /><span>${t('groups.new')}</span></button>
+          <button class="tile add" style=${'--i:' + Math.min(c.groups.length, 8)} onClick=${function () { c.go('newGroup', null, null); }}><${Icon} name="plus" size=${24} weight=${2} /><span>${t('groups.new')}</span></button>
         </div>`}
       </section>`;
   }
@@ -552,7 +577,7 @@
 
       <section class="card hero">
         <p class="muted">${mine > 0 ? t('group.owed') : mine < 0 ? t('group.owe') : t('home.square')}</p>
-        <p class=${'big ' + (mine > 0 ? 'owed' : mine < 0 ? 'owes' : '')}><${BigMoney} n=${mine} /></p>
+        <p class=${'big ' + (mine > 0 ? 'owed' : mine < 0 ? 'owes' : '')}><${CountMoney} n=${mine} /></p>
         <p class="muted">${plural('home.across', bills.length)}</p>
         ${plan.length > 0 && html`<button class="link-row" onClick=${function () { c.go('settle'); }}>
           <span>${plural('home.settle', plan.length)}</span><${Icon} name="arrow" size=${18} />
@@ -561,9 +586,9 @@
 
       <section class="section">
         <h2 class="eyebrow">${t('home.balances')}</h2>
-        <div class="list">
-          ${rows.map(function (r) {
-            return html`<div class="row" key=${r.p.id}>
+        <div class="list stagger">
+          ${rows.map(function (r, i) {
+            return html`<div class="row" key=${r.p.id} style=${'--i:' + Math.min(i, 8)}>
               <${Avatar} person=${r.p} size=${32} />
               <span class="row-main row-title">${whoName(c, r.p.id)}</span>
               <span class="hint">${r.v > 0 ? t('home.isOwed') : r.v < 0 ? t('home.owes') : t('home.even')}</span>
@@ -576,11 +601,11 @@
       <section class="section grow">
         <h2 class="eyebrow">${t('home.outings')}</h2>
         ${bills.length === 0 && html`<p class="empty">${t('home.noOutings')}</p>`}
-        <div class="list">
-          ${shown.map(function (bill) {
+        <div class="list stagger">
+          ${shown.map(function (bill, i) {
             var sh = Calc.billShares(bill);
             var there = (bill.presentIds || []).indexOf(c.me.id) !== -1;
-            return html`<button class="row tap" key=${bill.id} onClick=${function () { c.go('bill', bill.id); }}>
+            return html`<button class="row tap" key=${bill.id} style=${'--i:' + Math.min(i + 2, 8)} onClick=${function () { c.go('bill', bill.id); }}>
               <span class="row-main">
                 <span class="row-title">${bill.title}</span>
                 <span class="row-sub">${fmtDate(bill.date)} · ${t('home.paid', { name: whoName(c, bill.payerId), amount: money(sh.total) })}</span>
@@ -1222,7 +1247,7 @@
       <section class="card hero">
         <p class="muted">${[t('home.paid', { name: payerName, amount: money(sh.total) }), plural('bill.items', (bill.items || []).length)].concat(extras.length ? [t('bill.includes', { list: extras.join(' + ') })] : []).join(' · ')}</p>
         <p class="muted">${iPaid && back > 0 ? t('bill.youGetBack') : !iPaid && there ? t('bill.yourShare') : t('bill.total')}</p>
-        <p class=${'big' + (iPaid && back > 0 ? ' owed' : '')}><${BigMoney} n=${iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total} /></p>
+        <p class=${'big' + (iPaid && back > 0 ? ' owed' : '')}><${CountMoney} n=${iPaid && back > 0 ? back : !iPaid && there ? mine : sh.total} /></p>
       </section>
 
       <section class="section grow">
@@ -1293,12 +1318,12 @@
         <p class="muted">${plural('settle.lead', c.group.bills.length)}</p>
       </section>`}
 
-      ${plan.length > 0 && html`<section class="section grow">
+      ${plan.length > 0 && html`<section class="section grow stagger">
         <h2 class="eyebrow">${t('settle.whoPays')}</h2>
-        ${plan.map(function (p) {
+        ${plan.map(function (p, i) {
           var from = c.byId[p.fromId] || {};
           var to = c.byId[p.toId] || {};
-          return html`<div class="pay" key=${p.fromId + p.toId}>
+          return html`<div class="pay" key=${p.fromId + p.toId} style=${'--i:' + Math.min(i + 1, 8)}>
             <div class="pay-line">
               <${Avatar} person=${from} size=${32} />
               <span class="row-title">${whoName(c, p.fromId)}</span>
@@ -1337,25 +1362,25 @@
       </div>`}
       ${plan.length > 0 && !inApp && html`<button class="btn" onClick=${function () { c.line(planText()); }}><${Icon} name="send" />${t('settle.copyPlan')}</button>`}
 
-      ${asking && html`<div class="sheet" role="dialog" aria-label=${t('settle.remindTitle', { name: nameOf(c.byId[asking.fromId]) })}>
-        <div class="sheet-card">
+      ${asking && html`<${Sheet} label=${t('settle.remindTitle', { name: nameOf(c.byId[asking.fromId]) })} onClose=${function () { setAsking(null); }} render=${function (close) {
+        return html`
           <h2 class="eyebrow">${t('settle.remindTitle', { name: nameOf(c.byId[asking.fromId]) })}</h2>
           <p class="muted">${reminder(asking)}</p>
-          <button class="btn" onClick=${function () { toGroup(reminder(asking), card('remind', [asking])); setAsking(null); }}><${Icon} name="chat" />${t('share.toGroup')}</button>
-          ${c.data.friends.indexOf(asking.fromId) !== -1 && html`<button class="btn secondary" onClick=${function () { toFriend(asking.fromId, reminder(asking), card('remind', [asking])); setAsking(null); }}><${Icon} name="user" />${t('share.toFriend', { name: nameOf(c.byId[asking.fromId]) })}</button>`}
+          <button class="btn" onClick=${function () { toGroup(reminder(asking), card('remind', [asking])); close(); }}><${Icon} name="chat" />${t('share.toGroup')}</button>
+          ${c.data.friends.indexOf(asking.fromId) !== -1 && html`<button class="btn secondary" onClick=${function () { toFriend(asking.fromId, reminder(asking), card('remind', [asking])); close(); }}><${Icon} name="user" />${t('share.toFriend', { name: nameOf(c.byId[asking.fromId]) })}</button>`}
           <p class="links">
-            <button class="link quiet" onClick=${function () { c.line(reminder(asking)); setAsking(null); }}>${t('bill.copy')}</button><span aria-hidden="true">·</span>
-            <button class="link quiet" onClick=${function () { setAsking(null); }}>${t('common.cancel')}</button>
-          </p>
-        </div>
-      </div>`}`;
+            <button class="link quiet" onClick=${function () { c.line(reminder(asking)); close(); }}>${t('bill.copy')}</button><span aria-hidden="true">·</span>
+            <button class="link quiet" onClick=${close}>${t('common.cancel')}</button>
+          </p>`;
+      }} />`}`;
   }
 
   // ---------- group chat ----------
 
   // A conversation's rows, oldest first, with a date line where the day
   // changes. names: show who wrote each message (groups; not a two-person chat).
-  function chatRows(c, timeline, names) {
+  // openedAt: when the chat was opened; messages newer than that pop in.
+  function chatRows(c, timeline, names, openedAt) {
     var rows = [];
     var lastDay = '';
     timeline.forEach(function (entry) {
@@ -1375,9 +1400,10 @@
       }
       var m = entry.message;
       var isCard = !!(m.card && m.card.kind);
+      var fresh = !!openedAt && (m.at || 0) > openedAt;
       if (m.personId === c.me.id) {
-        rows.push(isCard ? html`<${ChatCard} key=${entry.key} c=${c} card=${m.card} mine=${true} />`
-          : html`<div class="bubble me" key=${entry.key}><p>${m.text}</p></div>`);
+        rows.push(isCard ? html`<${ChatCard} key=${entry.key} c=${c} card=${m.card} mine=${true} fresh=${fresh} />`
+          : html`<div class=${'bubble me' + (fresh ? ' new' : '')} key=${entry.key}><p>${m.text}</p></div>`);
         return;
       }
       var person = c.byId[m.personId] || {};
@@ -1385,7 +1411,7 @@
         <${Avatar} person=${person} size=${32} />
         <div class="msg-body">
           ${names && html`<span class="msg-name">${nameOf(person)}</span>`}
-          ${isCard ? html`<${ChatCard} c=${c} card=${m.card} />` : html`<div class="bubble ai"><p>${m.text}</p></div>`}
+          ${isCard ? html`<${ChatCard} c=${c} card=${m.card} fresh=${fresh} />` : html`<div class=${'bubble ai' + (fresh ? ' new' : '')}><p>${m.text}</p></div>`}
         </div>
       </div>`);
     });
@@ -1397,7 +1423,7 @@
   function ChatCard(p) {
     var c = p.c, card = p.card;
     var g = c.groups.filter(function (x) { return x.id === card.groupId; })[0];
-    return html`<div class=${'chat-card' + (p.mine ? ' me' : '')}>
+    return html`<div class=${'chat-card' + (p.mine ? ' me' : '') + (p.fresh ? ' new' : '')}>
       <p class="chat-card-title"><${Icon} name=${card.kind === 'bill' ? 'receipt' : 'bell'} size=${16} />${cardTitle(card, c.groups)}</p>
       ${(card.payments || []).map(function (x, i) {
         return html`<p class="chat-card-line" key=${i}><span>${whoName(c, x.fromId)} → ${whoName(c, x.toId, true)}</span><span class="amt">${money(x.amount)}</span></p>`;
@@ -1426,6 +1452,7 @@
   function Chat(c) {
     var g = c.group;
     var endRef = useRef(null);
+    var opened = useRef(Date.now());
     var messages = g.messages;
 
     // The group's ten most recent bills show up in the conversation as cards,
@@ -1448,7 +1475,7 @@
 
       <section class="chat grow">
         ${timeline.length === 0 && html`<p class="empty">${t('chat.empty')}</p>`}
-        ${chatRows(c, timeline, true)}
+        ${chatRows(c, timeline, true, opened.current)}
         <div ref=${endRef}></div>
       </section>
 
@@ -1462,6 +1489,7 @@
   function Dm(c) {
     var p = c.person;
     var endRef = useRef(null);
+    var opened = useRef(Date.now());
     var friend = c.data.friends.indexOf(p.id) !== -1;
     var timeline = (c.data.dms[p.id] || []).map(function (m) { return { at: m.at || 0, key: 'm' + m.id, message: m }; });
 
@@ -1476,7 +1504,7 @@
 
       <section class="chat grow">
         ${timeline.length === 0 && html`<p class="empty">${t('dm.empty', { name: p.name })}</p>`}
-        ${chatRows(c, timeline, false)}
+        ${chatRows(c, timeline, false, opened.current)}
         <div ref=${endRef}></div>
       </section>
 
@@ -1782,10 +1810,10 @@
 
       <section class="section">
         ${c.friends.length === 0 && html`<p class="empty">${t('friends.none')}</p>`}
-        <div class="list">
-          ${c.friends.slice().sort(function (x, y) { return y.dm.lastAt - x.dm.lastAt; }).map(function (p) {
+        <div class="list stagger">
+          ${c.friends.slice().sort(function (x, y) { return y.dm.lastAt - x.dm.lastAt; }).map(function (p, i) {
             var n = groupCount(p);
-            return html`<div class="row" key=${p.id}>
+            return html`<div class="row" key=${p.id} style=${'--i:' + Math.min(i, 8)}>
               <button class="row-btn" onClick=${function () { c.go('person', p.id); }}>
                 <${Avatar} person=${p} size=${44} />
                 <span class="row-main">
@@ -1795,7 +1823,7 @@
               </button>
               <button class="icon-btn chat-btn" aria-label=${t('dm.placeholder', { name: p.name })} onClick=${function () { c.go('dm', p.id); }}>
                 <${Icon} name="chat" />
-                ${p.dm.unread > 0 && html`<span class="badge" aria-hidden="true">${p.dm.unread > 9 ? '9+' : p.dm.unread}</span>`}
+                ${p.dm.unread > 0 && html`<span key=${p.dm.unread} class="badge" aria-hidden="true">${p.dm.unread > 9 ? '9+' : p.dm.unread}</span>`}
               </button>
             </div>`;
           })}
@@ -1896,9 +1924,9 @@
     function sum(list) { return list.reduce(function (s, x) { return s + x.p.amount; }, 0); }
     var net = sum(get) - sum(pay);
     function rows(list, owed) {
-      return html`<div class="list">
-        ${list.map(function (x) {
-          return html`<button class="row tap" key=${x.g.id + x.p.fromId + x.p.toId} onClick=${function () { c.go('settle', null, x.g.id, 'settleAll'); }}>
+      return html`<div class="list stagger">
+        ${list.map(function (x, i) {
+          return html`<button class="row tap" key=${x.g.id + x.p.fromId + x.p.toId} style=${'--i:' + Math.min(i, 8)} onClick=${function () { c.go('settle', null, x.g.id, 'settleAll'); }}>
             <${Avatar} person=${x.other} size=${40} />
             <span class="row-main">
               <span class="row-title">${nameOf(x.other)}</span>
@@ -1915,7 +1943,7 @@
       <${Head} title=${t('settle.title')} />
       <section class="card hero">
         <p class="muted">${net > 0 ? t('home.owed') : net < 0 ? t('home.owe') : t('home.square')}</p>
-        <p class="big"><${BigMoney} n=${net} /></p>
+        <p class="big"><${CountMoney} n=${net} /></p>
         ${(pay.length > 0 || get.length > 0) && html`<p class="muted">${t('settleAll.summary', { get: money(sum(get)), pay: money(sum(pay)) })}</p>`}
       </section>
       ${!pay.length && !get.length && html`<p class="empty">${t('settleAll.none')}</p>`}
@@ -1965,21 +1993,77 @@
 
   // Floating bar along the bottom of the four main screens. Groups carries the
   // count of unread chat messages across all groups.
+  // How deep each screen sits: going deeper slides in from the right, going
+  // back from the left, and screens at the same depth (the tabs) fade.
+  var DEPTH = {
+    home: 0, settleAll: 0, people: 0, me: 0,
+    group: 1, newGroup: 1, addFriend: 1, invite: 1, person: 1,
+    members: 2, chat: 2, settle: 2, bill: 2, edit: 2, ai: 2, dm: 2,
+    scan: 3
+  };
+  function screenAnim(from, to) {
+    if (!from) return 'in-tab';
+    var a = DEPTH[from.name] || 0, b = DEPTH[to.name] || 0;
+    return b > a ? 'in-fwd' : b < a ? 'in-back' : 'in-tab';
+  }
+
   var TABS = [
     { name: 'home', icon: 'chat', label: 'tabs.groups' },
     { name: 'settleAll', icon: 'swap', label: 'tabs.settle' },
     { name: 'people', icon: 'users', label: 'tabs.friends' },
     { name: 'me', icon: 'user', label: 'tabs.me' }
   ];
+  // The bottom bar. A grey pill sits behind the open tab and slides to the next
+  // one. A finger can also press the bar and slide along it: the pill follows,
+  // and letting go opens the tab underneath. A plain tap is just the button's click.
   function TabBar(p) {
-    return html`<nav class="tabbar" aria-label=${t('tabs.label')}>
-      ${TABS.map(function (tab) {
-        var on = p.current === tab.name;
+    var current = TABS.map(function (x) { return x.name; }).indexOf(p.current);
+    var dg = useState(null), drag = dg[0], setDrag = dg[1]; // {pos, over} while dragging
+    var press = useRef(null); // {x, id, moved, over} from pointerdown until it lifts
+    var navRef = useRef(null);
+    // Where the pill sits under a finger at clientX: 0 = first tab, 3 = last.
+    function posAt(clientX) {
+      var box = navRef.current.getBoundingClientRect();
+      var pos = (clientX - box.left - 6) / ((box.width - 12) / TABS.length) - 0.5;
+      return Math.max(0, Math.min(TABS.length - 1, pos));
+    }
+    function down(e) {
+      if (e.button > 0) return;
+      press.current = { x: e.clientX, id: e.pointerId, moved: false, over: current };
+    }
+    function move(e) {
+      var s = press.current;
+      if (!s || e.pointerId !== s.id) return;
+      if (!s.moved && Math.abs(e.clientX - s.x) < 8) return;
+      if (!s.moved) {
+        s.moved = true;
+        try { navRef.current.setPointerCapture(e.pointerId); } catch (x) { /* fine without */ }
+      }
+      var pos = posAt(e.clientX);
+      var over = Math.round(pos);
+      if (over !== s.over && navigator.vibrate) { try { navigator.vibrate(8); } catch (x) { /* not supported */ } }
+      s.over = over;
+      setDrag({ pos: pos, over: over });
+    }
+    function up(e) {
+      var s = press.current;
+      press.current = null;
+      if (!s || e.pointerId !== s.id || !s.moved) return; // a tap: the button's click handles it
+      setDrag(null);
+      if (s.over !== current) p.go(TABS[s.over].name, null, null);
+    }
+    function cancel() { press.current = null; setDrag(null); }
+    var shownOn = drag ? drag.over : current;
+    return html`<nav ref=${navRef} class=${'tabbar' + (drag ? ' dragging' : '')} aria-label=${t('tabs.label')}
+      onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${cancel}>
+      <span class="tab-pill" aria-hidden="true" style=${'--pos:' + (drag ? drag.pos : Math.max(current, 0))}></span>
+      ${TABS.map(function (tab, i) {
+        var on = shownOn === i;
         var n = tab.name === 'home' ? p.unread : tab.name === 'people' ? p.dmUnread : 0;
-        return html`<button key=${tab.name} class=${'tab' + (on ? ' on' : '')} aria-current=${on ? 'page' : null} onClick=${function () { p.go(tab.name, null, null); }}>
+        return html`<button key=${tab.name} class=${'tab' + (on ? ' on' : '')} aria-current=${p.current === tab.name ? 'page' : null} onClick=${function () { p.go(tab.name, null, null); }}>
           <span class="tab-icon">
             <${Icon} name=${tab.icon} size=${24} weight=${1.8} />
-            ${n > 0 && html`<span class="badge tab-badge" aria-hidden="true">${n > 9 ? '9+' : n}</span>`}
+            ${n > 0 && html`<span key=${n} class="badge tab-badge" aria-hidden="true">${n > 9 ? '9+' : n}</span>`}
           </span>
           <span class="tab-label">${t(tab.label)}</span>
           ${n > 0 && html`<span class="visually-hidden">${plural('groups.unread', n)}</span>`}
@@ -2156,14 +2240,14 @@
         <${Avatar} person=${p} size=${96} />
         <h2 class="display">${p.name}</h2>
       </section>
-      ${friend && html`<button class="btn" onClick=${function () { c.go('dm', p.id, undefined, 'person'); }}><${Icon} name="chat" />${t('dm.open')}${unread > 0 && html`<span class="badge inline">${unread > 9 ? '9+' : unread}</span>`}</button>`}
+      ${friend && html`<button class="btn" onClick=${function () { c.go('dm', p.id, undefined, 'person'); }}><${Icon} name="chat" />${t('dm.open')}${unread > 0 && html`<span key=${unread} class="badge inline">${unread > 9 ? '9+' : unread}</span>`}</button>`}
       <section class="section">
         <h2 class="eyebrow">${t('person.shared')}</h2>
         ${shared.length === 0 && html`<p class="empty">${t('people.noGroup')}</p>`}
-        <div class="list">
-          ${shared.map(function (g) {
+        <div class="list stagger">
+          ${shared.map(function (g, i) {
             var v = between(g);
-            return html`<button class="row tap" key=${g.id} onClick=${function () { c.go(v ? 'settle' : 'group', null, g.id); }}>
+            return html`<button class="row tap" key=${g.id} style=${'--i:' + Math.min(i, 8)} onClick=${function () { c.go(v ? 'settle' : 'group', null, g.id); }}>
               <${GroupAvatar} group=${g} size=${40} />
               <span class="row-main">
                 <span class="row-title">${g.name}</span>
@@ -2196,6 +2280,8 @@
     var ts = useState(''), toast = ts[0], setToast = ts[1];
     var cp = useState(''), copyText = cp[0], setCopyText = cp[1];
     var na = useState(false), needSignIn = na[0], setNeedSignIn = na[1]; // a guest tapped an AI button
+    var tl = useState(false), toastLeaving = tl[0], setToastLeaving = tl[1];
+    var screen = useRef({ key: null, route: null, anim: '' }); // the shown screen and how it came in
 
     useEffect(function () {
       var stop = store.subscribe(setData);
@@ -2205,8 +2291,10 @@
     useEffect(function () { window.scrollTo(0, 0); }, [route.name, route.id, route.gid]);
     useEffect(function () {
       if (!toast) return undefined;
+      setToastLeaving(false);
+      var fade = setTimeout(function () { setToastLeaving(true); }, 2350);
       var h = setTimeout(function () { setToast(''); }, 2600);
-      return function () { clearTimeout(h); };
+      return function () { clearTimeout(fade); clearTimeout(h); };
     }, [toast]);
 
     var lang = data.settings.lang || I18n.detect();
@@ -2388,6 +2476,12 @@
       tab = 'home';
     }
     var unread = groups.reduce(function (n, g) { return n + g.unread; }, 0);
+    // A new screen slides in (deeper from the right, back from the left, a fade
+    // between tabs). Decided once per screen, so updates while it's open don't restart it.
+    var screenKey = route.name + ':' + (route.id || '') + ':' + (route.gid || '');
+    if (screen.current.key !== screenKey) {
+      screen.current = { key: screenKey, route: route, anim: screenAnim(screen.current.route, route) };
+    }
     var dmUnread = friends.reduce(function (n, p) { return n + p.dm.unread; }, 0);
 
     return html`<main class=${'app' + (tab ? ' with-tabs' : '')}>
@@ -2397,24 +2491,22 @@
         <span>${t('guest.bar')}</span>
         <button class="link" onClick=${function () { go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
       </div>`}
-      ${view}
+      <div class=${'screen ' + screen.current.anim} key=${screenKey}>${view}</div>
       ${tab && html`<${TabBar} current=${tab} unread=${unread} dmUnread=${dmUnread} go=${go} />`}
-      <div class="toast-wrap" aria-live="polite">${toast && html`<div class="toast">${toast}</div>`}</div>
-      ${copyText && html`<div class="sheet" role="dialog" aria-label=${t('copy.manual')}>
-        <div class="sheet-card">
+      <div class="toast-wrap" aria-live="polite">${toast && html`<div key=${toast} class=${'toast' + (toastLeaving ? ' leaving' : '')}>${toast}</div>`}</div>
+      ${copyText && html`<${Sheet} label=${t('copy.manual')} onClose=${function () { setCopyText(''); }} render=${function (close) {
+        return html`
           <h2 class="eyebrow">${t('copy.manual')}</h2>
           <textarea id="copy-text" class="field area" readonly rows="8" value=${copyText} onFocus=${function (e) { e.target.select(); }}></textarea>
-          <button class="btn" onClick=${function () { setCopyText(''); }}>${t('common.close')}</button>
-        </div>
-      </div>`}
-      ${needSignIn && html`<div class="sheet" role="dialog" aria-label=${t('guest.aiTitle')}>
-        <div class="sheet-card">
+          <button class="btn" onClick=${close}>${t('common.close')}</button>`;
+      }} />`}
+      ${needSignIn && html`<${Sheet} label=${t('guest.aiTitle')} onClose=${function () { setNeedSignIn(false); }} render=${function (close) {
+        return html`
           <h2 class="row-title">${t('guest.aiTitle')}</h2>
           <p class="muted">${t('guest.aiLead')}</p>
           <button class="btn" onClick=${function () { setNeedSignIn(false); setDraft(null); go('home', null, null); store.leaveGuest(); }}>${t('guest.signIn')}</button>
-          <button class="btn ghost" onClick=${function () { setNeedSignIn(false); }}>${t('guest.notNow')}</button>
-        </div>
-      </div>`}
+          <button class="btn ghost" onClick=${close}>${t('guest.notNow')}</button>`;
+      }} />`}
     </main>`;
   }
 

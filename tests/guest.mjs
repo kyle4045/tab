@@ -99,9 +99,17 @@ try {
   await button(page, 'Mark as paid').click();
   check(await seen(page, 'Recent payments', 5000) || await seen(page, 'Undo', 5000), 'a payment is marked as paid');
 
-  // 9. Friends asks to sign in.
-  await tab(page, 'Friends');
-  check(await seen(page, 'Sign in to add friends'), 'Friends asks to sign in');
+  // 9. Friends asks to sign in. Reached by sliding a finger along the tab bar
+  // from Groups to Friends and letting go there.
+  await tab(page, 'Groups');
+  const bar = page.locator('nav.tabbar');
+  const from = await bar.getByRole('button', { name: /^Groups/ }).boundingBox();
+  const to = await bar.getByRole('button', { name: /^Friends/ }).boundingBox();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  for (let k = 1; k <= 8; k++) await page.mouse.move(from.x + from.width / 2 + (to.x - from.x) * k / 8, from.y + from.height / 2);
+  await page.mouse.up();
+  check(await seen(page, 'Sign in to add friends'), 'sliding along the tab bar to Friends opens it, and Friends asks to sign in');
   await shot(page, 'g05-friends');
 
   // 10. Me: the note, and back to the welcome screen with the groups kept.

@@ -28,6 +28,11 @@
   --focus: #2F6FED;
   --display: 'Barlow Condensed', 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
   --font: 'Inter', 'Noto Sans TC', system-ui, -apple-system, 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+  /* Motion: --ease-bounce overshoots a little, for a springy, playful feel. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 180ms;
+  --dur: 340ms;
   color-scheme: light;
 }
 
@@ -35,7 +40,9 @@
    one) doesn't shift the page and the tab bar sideways. */
 html { height: 100%; scrollbar-gutter: stable; }
 html, body { background: var(--bg); }
+/* Screens slide in from the side; anything that pokes out while moving is cut off at the edge. */
 body {
+  overflow-x: clip;
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -71,6 +78,8 @@ input:focus-visible { outline-offset: 0; }
   gap: 20px;
 }
 .boot { color: var(--muted); padding-block: 24px; }
+/* Each screen sits in its own box (keyed by route in App), so it can slide in. */
+.screen { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 
 /* text: headings in tall condensed capitals, the rest plain */
 h1, .eyebrow, .lead-title, .display, .big, .day-sep, .tile-name {
@@ -427,13 +436,21 @@ label.icon-btn { cursor: pointer; }
   border: 1px solid rgba(14, 15, 17, 0.06); border-radius: 34px; background: rgba(255, 255, 255, 0.86);
   -webkit-backdrop-filter: blur(18px) saturate(1.6); backdrop-filter: blur(18px) saturate(1.6);
   box-shadow: 0 8px 28px rgba(14, 15, 17, 0.12);
+  touch-action: none; /* a finger can slide along the bar without scrolling the page */
+}
+/* The grey pill behind the open tab. --pos is the tab it sits on: a whole
+   number, or in between while a finger drags it along the bar. */
+.tab-pill {
+  position: absolute; top: 6px; bottom: 6px; left: 6px; width: calc((100% - 18px) / 4);
+  border-radius: 28px; background: var(--soft-2); pointer-events: none;
+  transform: translateX(calc(var(--pos, 0) * (100% + 2px)));
 }
 .tab {
   flex: 1 1 0; min-width: 0; min-height: 62px; padding: 6px 2px;
   border: 0; border-radius: 28px; background: transparent; color: var(--fg);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
 }
-.tab.on { background: var(--soft-2); }
+.tab { position: relative; z-index: 1; }
 .tab-icon { position: relative; display: inline-flex; }
 .tab-label { max-width: 100%; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab.on .tab-label { font-weight: 700; }
@@ -460,7 +477,7 @@ button, label.btn, label.icon-btn { --glow: rgba(14, 15, 17, 0.08); -webkit-tap-
 }
 @media (prefers-reduced-motion: no-preference) {
   .btn, .icon-btn, .pill, .seg button, .tab, .who, .row.tap, .link-row, .chat-link, .swatch, .card.hero.live, .tile, .icon-choice {
-    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: transform 0.38s var(--ease-bounce);
   }
   .btn:not(:disabled):active, .icon-btn:not(:disabled):active, .pill:active, .seg button:active,
   .tab:active, .who:active, .link-row:active, .chat-link:active, .swatch:active, .card.hero.live:active,
@@ -476,6 +493,41 @@ button, label.btn, label.icon-btn { --glow: rgba(14, 15, 17, 0.08); -webkit-tap-
 @media (prefers-reduced-motion: reduce) {
   .tap-glow::after { animation: none; opacity: 0; }
 }
+
+/* Motion. Screens slide (deeper from the right, back from the left) or fade
+   between tabs; lists rise in one after another (--i, set in app.js); new chat
+   messages and badges pop; sheets and toasts spring in and sink away. Only
+   when the phone hasn't asked for less motion: without it, things just appear. */
+@media (prefers-reduced-motion: no-preference) {
+  .screen.in-fwd { animation: in-fwd var(--dur) var(--ease-bounce) backwards; }
+  .screen.in-back { animation: in-back var(--dur) var(--ease-bounce) backwards; }
+  .screen.in-tab { animation: in-tab var(--dur) var(--ease-out) backwards; }
+  .stagger > * { animation: rise 0.44s var(--ease-bounce) backwards; animation-delay: calc(var(--i, 0) * 45ms); }
+  .bubble.new, .chat-card.new { animation: pop 0.4s var(--ease-bounce) backwards; }
+  .bubble.me.new, .chat-card.me.new { transform-origin: bottom right; }
+  .bubble.ai.new, .chat-card.new:not(.me) { transform-origin: bottom left; }
+  .badge { animation: badge-pop 0.45s var(--ease-bounce) backwards; }
+  .tab-pill { transition: transform 0.45s var(--ease-bounce); }
+  .tabbar.dragging .tab-pill { transition: transform 0.08s linear; transform: translateX(calc(var(--pos, 0) * (100% + 2px))) scale(1.06); }
+  .toast { animation: toast-in 0.42s var(--ease-bounce) backwards; }
+  .toast.leaving { animation: toast-out 0.25s ease-in forwards; }
+  .sheet { animation: fade-in 0.2s ease-out backwards; }
+  .sheet-card { animation: sheet-up var(--dur) var(--ease-bounce) backwards; }
+  .sheet.closing { animation: fade-out 0.2s ease-in forwards; }
+  .sheet.closing .sheet-card { animation: sheet-down 0.2s ease-in forwards; }
+}
+@keyframes in-fwd { from { opacity: 0; transform: translateX(56px); } }
+@keyframes in-back { from { opacity: 0; transform: translateX(-56px); } }
+@keyframes in-tab { from { opacity: 0; transform: scale(0.98) translateY(6px); } }
+@keyframes rise { from { opacity: 0; transform: translateY(16px) scale(0.97); } }
+@keyframes pop { from { opacity: 0; transform: scale(0.8) translateY(8px); } }
+@keyframes badge-pop { from { transform: scale(0); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(18px) scale(0.9); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(10px) scale(0.96); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes sheet-up { from { transform: translateY(110%); } }
+@keyframes sheet-down { to { transform: translateY(110%); } }
 
 /* overlays */
 .toast-wrap {
