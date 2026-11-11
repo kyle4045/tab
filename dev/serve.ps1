@@ -25,7 +25,7 @@ while ($listener.IsListening) {
   $ctx = $listener.GetContext()
   try {
     $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath.TrimStart('/'))
-    if (-not $rel) { $rel = 'index.html' }
+    if (-not $rel -or $rel.EndsWith('/')) { $rel += 'index.html' }
     $file = Join-Path $root $rel
     if ($rel -notmatch '\.\.' -and (Test-Path -LiteralPath $file -PathType Leaf)) {
       $bytes = [IO.File]::ReadAllBytes($file)
